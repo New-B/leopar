@@ -53,7 +53,11 @@ static inline ucp_tag_t make_tag(int opcode, int src_rank)
  */
 int ucx_init(ucx_context_t *ucx, tcp_config_t *cfg, int rank)
 {
-    if (!ucx || !cfg) return -1;
+    if (!ucx || !cfg) {
+        log_error("ucx_init: Invalid input parameters (ucx=%p, cfg=%p)", ucx, cfg);
+        return -1;
+    }
+    log_debug("ucx_init: Starting UCX initialization for rank=%d", rank);
 
     /* 1. Read UCX config and init context */
     ucp_params_t ucp_params;
@@ -63,12 +67,14 @@ int ucx_init(ucx_context_t *ucx, tcp_config_t *cfg, int rank)
 
     ucp_config_t *ucp_cfg = NULL;
     if (ucp_config_read(NULL, NULL, &ucp_cfg) != UCS_OK) {
-        log_error("ucp_config_read failed");
+        log_error("ucx_init: ucp_config_read failed");
         return -1;
     }
+    log_debug("ucx_init: UCX config read successfully");
+    ucp_config_print(ucp_cfg, stdout, NULL, UCS_CONFIG_PRINT_CONFIG);
 
     if (ucp_init(&ucp_params, ucp_cfg, &ucx->ucp_context) != UCS_OK) {
-        log_error("ucp_init failed");
+        log_error("ucx_init: ucp_init failed");
         ucp_config_release(ucp_cfg);
         return -1;
     }
@@ -81,7 +87,7 @@ int ucx_init(ucx_context_t *ucx, tcp_config_t *cfg, int rank)
     worker_params.thread_mode = UCS_THREAD_MODE_MULTI;  /* multithreaded runtime */
 
     if (ucp_worker_create(ucx->ucp_context, &worker_params, &ucx->ucp_worker) != UCS_OK) {
-        log_error("ucp_worker_create failed");
+        log_error("ucx_init: ucp_worker_create failed");
         ucp_cleanup(ucx->ucp_context); ucx->ucp_context = NULL;
         return -1;
     }
@@ -90,7 +96,7 @@ int ucx_init(ucx_context_t *ucx, tcp_config_t *cfg, int rank)
     ucp_address_t *my_addr = NULL;
     size_t my_len = 0;
     if (ucp_worker_get_address(ucx->ucp_worker, &my_addr, &my_len) != UCS_OK) {
-        log_error("ucp_worker_get_address failed");
+        log_error("ucx_init: ucp_worker_get_address failed");
         ucp_worker_destroy(ucx->ucp_worker); ucx->ucp_worker = NULL;
         ucp_cleanup(ucx->ucp_context); ucx->ucp_context = NULL;
         return -1;
@@ -101,7 +107,7 @@ int ucx_init(ucx_context_t *ucx, tcp_config_t *cfg, int rank)
     size_t *tbl_lens = NULL;
     if (tcp_allgather_ucx_addrs(&g_ctx.tcp_cfg, g_ctx.rank, g_ctx.world_size,
                                 my_addr, my_len, &tbl_addrs, &tbl_lens) != 0) {
-        log_error("TCP allgather UCX addresses failed");
+        log_error("ucx_init: TCP allgather UCX addresses failed");
         ucp_worker_release_address(ucx->ucp_worker, my_addr);
         ucp_worker_destroy(ucx->ucp_worker); ucx->ucp_worker = NULL;
         ucp_cleanup(ucx->ucp_context); ucx->ucp_context = NULL;
@@ -112,7 +118,7 @@ int ucx_init(ucx_context_t *ucx, tcp_config_t *cfg, int rank)
     /* 5. Create endpoints */
     ucx->eps = (ucp_ep_h*)calloc(cfg->world_size, sizeof(ucp_ep_h));
     if (!ucx->eps) {
-        log_error("Failed to allocate endpoint array");
+        log_error("ucx_init: Failed to allocate endpoint array");
         for (int i = 0; i < cfg->world_size; ++i) free(tbl_addrs[i]);
         free(tbl_addrs); free(tbl_lens);
         ucp_worker_destroy(ucx->ucp_worker); ucx->ucp_worker = NULL;
@@ -123,7 +129,7 @@ int ucx_init(ucx_context_t *ucx, tcp_config_t *cfg, int rank)
     if (ucx_tcp_create_all_eps(ucx->ucp_context, ucx->ucp_worker,
                                rank, cfg->world_size,
                                tbl_addrs, tbl_lens, ucx->eps) != 0) {
-        log_warn("Some UCX endpoints may have failed");
+        log_warn("ucx_init: Some UCX endpoints may have failed");
     }
 
     for (int i = 0; i < cfg->world_size; ++i) {
@@ -134,7 +140,7 @@ int ucx_init(ucx_context_t *ucx, tcp_config_t *cfg, int rank)
     ucx->rank = rank;
     ucx->world_size = cfg->world_size;
 
-    log_info("UCX init complete: rank=%d, world_size=%d", rank, cfg->world_size);
+    log_info("ucx_init: UCX init complete: rank=%d, world_size=%d", rank, ucx->world_size);
     return 0;
 }
 
