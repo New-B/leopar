@@ -1,0 +1,49 @@
+#!/bin/bash
+# run_leopar_api_nulti_nodes_demo.sh
+# Auto-launch LeoPar UCX runtime across cluster nodes via ssh
+# Usage:
+#   ./scripts/run_leopar_api_nulti_nodes_demo.sh conf/cluster.ini
+
+CONFIG=$1  # get config file from the first argument
+BIN=bin/leopar_api_multi_nodes_demo
+
+if [ -z "$CONFIG" ]; then  # check the config file 
+  echo "Usage: $0 <config_path>"
+  exit 1
+fi
+
+if [ ! -f "$BIN" ]; then   # check the executable file
+  echo "Error: binary $BIN not found, run 'make' first."
+  exit 2
+fi
+
+# extrct the value of world_size from the config file
+WORLD_SIZE=$(grep -i '^world_size' "$CONFIG" | cut -d'=' -f2 | tr -d ' ')
+if [ -z "$WORLD_SIZE" ]; then
+  echo "Error: world_size not found in $CONFIG"
+  exit 3
+fi
+
+ROOT=$(pwd)
+TS=$(date +%Y%m%d_%H%M%S)
+
+echo "Launching LeoPar across $WORLD_SIZE nodes..."
+
+for (( RANK=0; RANK<$WORLD_SIZE; RANK++ )); do
+  HOST=$(grep -i "^rank$RANK" "$CONFIG" | cut -d'=' -f2 | tr -d ' ') # get the IP address of each rank
+  if [ -z "$HOST" ]; then
+    echo "Error: IP for rank $RANK not found in $CONFIG"
+    exit 4
+  fi
+
+  LOGFILE="logs/leopar_rank${RANK}_${HOST}_${TS}.log"
+
+  echo "  -> Starting rank $RANK on $HOST"
+
+  ssh -n "$HOST" "cd $ROOT && mkdir -p logs && touch '$LOGFILE' && \
+  nohup $BIN '$CONFIG' $RANK '$LOGFILE' >>'$LOGFILE' 2>&1 || {
+    echo \"  !! SSH/launch failed on $HOST (rank $RANK)\"; \
+  }"
+done
+
+echo "All ranks launched.  Logs on each node under: logs/"
