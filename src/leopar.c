@@ -43,13 +43,14 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
         return -1;
     }
     log_set_rank(rank);
-    log_info("LeoPar runtime starting: rank=%d size=%d ip=%s", g_ctx.rank, g_ctx.world_size, g_ctx.tcp_cfg.ip_of_rank[rank]);
 
     /* 2. Parse cluster config (IPs, ports, timeouts, etc.) */
     if (load_config(config_path, rank) != 0) {
         log_error("Failed to load cluster config: %s", config_path);
         return -1;
     }
+    
+    log_info("LeoPar runtime starting: rank=%d size=%d ip=%s", g_ctx.rank, g_ctx.world_size, g_ctx.tcp_cfg.ip_of_rank[rank]);
 
     // char logname[256];
     // time_t now = time(NULL);
