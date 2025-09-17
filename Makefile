@@ -89,6 +89,7 @@ $(LOG_DIR):
 clean:
 	rm -f $(SRC_DIR)/*.o $(TEST_DIR)/*.o
 	rm -f $(DEMO_BINS)
+	rm -f $(LOG_DIR)/*
 
 .PHONY: all clean
 
