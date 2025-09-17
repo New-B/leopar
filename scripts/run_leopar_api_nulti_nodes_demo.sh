@@ -29,7 +29,16 @@ TS=$(date +%Y%m%d_%H%M%S)
 
 echo "Launching LeoPar across $WORLD_SIZE nodes..."
 
-for (( RANK=0; RANK<$WORLD_SIZE; RANK++ )); do
+HOST0=$(grep -i "^rank0" "$CONFIG" | cut -d'=' -f2 | tr -d ' ')
+LOGFILE="logs/leopar_rank0_${HOST0}_${TS}.log"
+
+echo "  -> Starting rank 0 locally"
+(
+  cd "$ROOT" && mkdir -p logs && : > "$LOGFILE" && \
+  nohup "$BIN" "$CONFIG" 0 "$LOGFILE" >>"$LOGFILE" 2>&1 & 
+)
+
+for (( RANK=1; RANK<$WORLD_SIZE; RANK++ )); do
   HOST=$(grep -i "^rank$RANK" "$CONFIG" | cut -d'=' -f2 | tr -d ' ') # get the IP address of each rank
   if [ -z "$HOST" ]; then
     echo "Error: IP for rank $RANK not found in $CONFIG"
@@ -40,10 +49,9 @@ for (( RANK=0; RANK<$WORLD_SIZE; RANK++ )); do
 
   echo "  -> Starting rank $RANK on $HOST"
 
-  ssh -n "$HOST" "cd $ROOT && mkdir -p logs && touch '$LOGFILE' && \
-  nohup $BIN '$CONFIG' $RANK '$LOGFILE' >>'$LOGFILE' 2>&1 || {
-    echo \"  !! SSH/launch failed on $HOST (rank $RANK)\"; \
-  }"
+ssh -n "$HOST" "cd $ROOT && mkdir -p logs && : > '$LOGFILE' && \
+  nohup $BIN '$CONFIG' $RANK '$LOGFILE' >>'$LOGFILE' 2>&1 & "\
+  || { echo "  !! SSH/launch failed on $HOST (rank $RANK)"; }
 done
 
 echo "All ranks launched.  Logs on each node under: logs/"
