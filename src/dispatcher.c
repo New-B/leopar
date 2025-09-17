@@ -24,6 +24,9 @@
 #include <inttypes.h>
 #include <stdatomic.h>
 #include <unistd.h>
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <dlfcn.h>   /* for dlsym, requires linking with -ldl */
 
 /* ---- Tag helpers: hi32=opcode, lo32=rank ---- */

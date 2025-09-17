@@ -9,7 +9,7 @@ UCX_HOME  := /usr
 INCDIRS   := -Iinclude -I$(UCX_HOME)/include
 LIBDIRS   := -L$(UCX_HOME)/lib
 
-CFLAGS    := -Wall -g $(INCDIRS)
+CFLAGS    := -Wall -g $(INCDIRS) -D_GNU_SOURCE
 # -rdynamic makes main binary symbols visible to dlsym()
 LDFLAGS   := $(LIBDIRS) -lucp -lucs -ldl -lpthread -rdynamic
 # If UCX is in a non-standard runtime path, uncomment:
