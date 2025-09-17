@@ -6,14 +6,29 @@ CC        := gcc
 # Default UCX_HOME (can be overridden in `make UCX_HOME=/path/to/ucx`)
 UCX_HOME  := /usr
 
-INCDIRS   := -Iinclude -I$(UCX_HOME)/include
-LIBDIRS   := -L$(UCX_HOME)/lib
+# Try pkg-config first; fallback to UCX_HOME
+HAVE_PKG_UCX := $(shell pkg-config --exists ucx && echo yes || echo no)
 
-CFLAGS    := -Wall -g $(INCDIRS) -D_GNU_SOURCE
+ifeq ($(HAVE_PKG_UCX),yes)
+  UCX_CFLAGS := $(shell pkg-config --cflags ucx)
+  UCX_LIBS   := $(shell pkg-config --libs   ucx)   # typically: -L... -lucp -luct -lucs -lucm
+  INCDIRS    := -Iinclude $(UCX_CFLAGS)
+  LIBDIRS    :=
+  UCX_LINK   := $(UCX_LIBS)
+else
+  INCDIRS    := -Iinclude -I$(UCX_HOME)/include
+  LIBDIRS    := -L$(UCX_HOME)/lib
+  # Fallback: explicitly list all ucx components (order matters)
+  UCX_LINK   := -lucp -luct -lucs -lucm
+endif
+
+CFLAGS    := -Wall -g -D_GNU_SOURCE $(INCDIRS)
 # -rdynamic makes main binary symbols visible to dlsym()
-LDFLAGS   := $(LIBDIRS) -lucp -lucs -ldl -lpthread -rdynamic
-# If UCX is in a non-standard runtime path, uncomment:
+# --no-as-needed prevents linker from dropping transitive UCX libs
+LDFLAGS   := $(LIBDIRS) $(UCX_LINK) -ldl -lpthread -rdynamic -Wl,--no-as-needed
+# If UCX is in a non-standard runtime path, uncomment one of:
 # LDFLAGS  += -Wl,-rpath,$(UCX_HOME)/lib
+# LDFLAGS  += $(shell pkg-config --variable=libdir ucx 2>/dev/null | sed 's#^#-Wl,-rpath,#')
 
 # Directories
 SRC_DIR  := src
@@ -57,15 +72,6 @@ DEMO_SRCS := $(addprefix $(TEST_DIR)/,$(addsuffix .c,$(DEMOS)))
 DEMO_OBJS := $(DEMO_SRCS:.c=.o)
 DEMO_BINS := $(addprefix $(BIN_DIR)/,$(DEMOS))
 
-# # Test program
-# TEST_SRC := $(TEST_DIR)/leoparDemo_ucx_log.c $(TEST_DIR)/leoparDemo_create_join.c
-# TEST_OBJ := $(TEST_SRC:.c=.o)
-# TARGET   := $(BIN_DIR)/leoparDemo_ucx_log $(BIN_DIR)leoparDemo_create_join
-
-
-# # Rules
-# all: $(TARGET)
-
 # Default target: build all demos
 all: $(BIN_DIR) $(LOG_DIR) $(DEMO_BINS)
 
@@ -92,8 +98,6 @@ clean:
 	rm -f $(LOG_DIR)/*
 
 .PHONY: all clean
-
-
 
 
 
