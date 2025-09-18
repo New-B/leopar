@@ -579,6 +579,8 @@ int tcp_allgather_ucx_addrs(const struct tcp_config_t *cfg,
             free(tbl_addrs); free(tbl_lens);
             return -1;
         }
+        log_info("Rank0 listening on port=%d", cfg->base_port);
+
 
         /* save self address */
         tbl_lens[0]  = my_len;
@@ -644,6 +646,7 @@ int tcp_allgather_ucx_addrs(const struct tcp_config_t *cfg,
                 if (tcp_sendn(cfd, &ws, sizeof(ws), cfg->io_timeout_ms) != 0) {
                     log_error("Rank0 send ws to rank=%d failed", r); tcp_close_fd(cfd); peer_cfd[r] = -1; rc = -1; continue;
                 }
+                log_debug("Rank0 sending world_size(%u) to rank=%d", ws, r);
                 for (int i = 0; i < world_size; ++i) {
                     if (send_blob(cfd, tbl_addrs[i], (uint32_t)tbl_lens[i], cfg->io_timeout_ms) != 0) {
                         log_error("Rank0 send blob[%d] to rank=%d failed", i, r);
@@ -673,6 +676,7 @@ int tcp_allgather_ucx_addrs(const struct tcp_config_t *cfg,
         if (send_secret(cfd, cfg->secret, cfg->io_timeout_ms) != 0) { tcp_close_fd(cfd); free(tbl_addrs); free(tbl_lens); return -1; }
         if (tcp_sendn(cfd, &my_rank, sizeof(my_rank), cfg->io_timeout_ms) != 0) { tcp_close_fd(cfd); free(tbl_addrs); free(tbl_lens); return -1; }
         if (send_blob(cfd, my_addr, (uint32_t)my_len, cfg->io_timeout_ms) != 0) { tcp_close_fd(cfd); free(tbl_addrs); free(tbl_lens); return -1; }
+        log_debug("Rank%d sent UCX addr to rank0", my_rank);
 
         /* 在同一连接上等待 rank0 下发表 */
         uint32_t ws = 0;
@@ -680,6 +684,7 @@ int tcp_allgather_ucx_addrs(const struct tcp_config_t *cfg,
             log_error("Rank%d recv ws failed or mismatch (got=%u expect=%d)", my_rank, ws, world_size);
             tcp_close_fd(cfd); free(tbl_addrs); free(tbl_lens); return -1;
         }
+        log_debug("Rank%d recv world_size=%u", my_rank, ws);
         for (int i = 0; i < world_size; ++i) {
             void *b = NULL; uint32_t blen = 0;
             if (recv_blob(cfd, &b, &blen, cfg->io_timeout_ms) != 0) {
