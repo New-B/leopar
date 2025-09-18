@@ -265,6 +265,7 @@ int tcp_allgather_ucx_addrs(const struct tcp_config_t *cfg,
             struct sockaddr_in cli; socklen_t clilen = sizeof(cli);
             int cfd = accept(pfd, (struct sockaddr*)&cli, &clilen);
             if (cfd < 0) { tcp_close_fd(pfd); rc = -1; break; }
+            log_debug("Rank0 accepted table pull connection from rank=%d", r);
 
             /* auth */
             if (recv_secret_and_check(cfd, cfg->secret, cfg->io_timeout_ms) != 0) { tcp_close_fd(cfd); tcp_close_fd(pfd); rc = -1; break; }
@@ -307,6 +308,7 @@ int tcp_allgather_ucx_addrs(const struct tcp_config_t *cfg,
         /* send my UCX address blob */
         if (send_blob(cfd, my_addr, (uint32_t)my_len, cfg->io_timeout_ms) != 0) { tcp_close_fd(cfd); free(tbl_addrs); free(tbl_lens); return -1; }
         tcp_close_fd(cfd);
+        log_debug("Rank%d sent UCX addr to rank0", my_rank);
 
         /* pull full table from rank0 */
         int pull_fd = -1;
