@@ -71,7 +71,7 @@ int ucx_init(ucx_context_t *ucx, tcp_config_t *cfg, int rank)
         return -1;
     }
     log_debug("ucx_init: UCX config read successfully");
-    ucp_config_print(ucp_cfg, stdout, NULL, UCS_CONFIG_PRINT_CONFIG);
+    // ucp_config_print(ucp_cfg, stdout, NULL, UCS_CONFIG_PRINT_CONFIG);
 
     if (ucp_init(&ucp_params, ucp_cfg, &ucx->ucp_context) != UCS_OK) {
         log_error("ucx_init: ucp_init failed");
@@ -133,8 +133,10 @@ int ucx_init(ucx_context_t *ucx, tcp_config_t *cfg, int rank)
     }
 
     for (int i = 0; i < cfg->world_size; ++i) {
-        free(tbl_addrs[i]); free(tbl_addrs); free(tbl_lens);
-    }
+        free(tbl_addrs[i]); tbl_addrs[i] = NULL;
+    } 
+    free(tbl_addrs); tbl_addrs = NULL;
+    free(tbl_lens); tbl_lens = NULL;
 
     /* 6. Save rank/world_size */
     ucx->rank = rank;
