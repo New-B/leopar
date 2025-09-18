@@ -64,7 +64,10 @@ static int tcp_listen_on(int port, int *out_fd)
 static int tcp_connect_timeout(const char *ip, int port, int timeout_ms)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        log_error("socket() failed: %s", strerror(errno));
+        return -1;
+    }
 
     set_nonblock(fd, 1);
 
@@ -83,6 +86,7 @@ static int tcp_connect_timeout(const char *ip, int port, int timeout_ms)
         return fd;
     }
     if (errno != EINPROGRESS) {
+        log_error("connect() to %s:%d failed immediately: %s", ip, port, strerror(errno));
         close(fd);
         return -1;
     }
@@ -97,10 +101,13 @@ static int tcp_connect_timeout(const char *ip, int port, int timeout_ms)
     rc = select(fd + 1, NULL, &wfds, NULL, &tv);
     if (rc == 1 && FD_ISSET(fd, &wfds)) {
         int err = 0; socklen_t len = sizeof(err);
-        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0) {
-            set_nonblock(fd, 0);
-            return fd;
-        }
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
+        if (err == 0) { set_nonblock(fd, 0); return fd; }
+        log_error("connect() to %s:%d completed with error: %s", ip, port, strerror(err));
+    } else if (rc == 0) {
+        log_error("connect() to %s:%d timed out after %d ms", ip, port, timeout_ms);
+    } else {
+        log_error("select() for connect to %s:%d failed: %s", ip, port, strerror(errno));
     }
     close(fd);
     return -1;
