@@ -33,6 +33,9 @@
 #define TAG_MAKE(op, rank)     ((((uint64_t)(op)) << 32) | (uint32_t)(rank))
 #define TAG_MASK_OPCODE        (0xffffffff00000000ull)
 
+#define TAG_OPCODE(tag)     ((int)((tag) >> 32))
+#define TAG_SRC(tag)        ((int)((tag) & 0xffffffffu))
+
 /* 后台线程控制 */
 static pthread_t       g_disp_thr;
 static atomic_int      g_disp_running = 0;
@@ -62,6 +65,7 @@ static void handle_func_announce(const void *buf, size_t len, uint32_t src_rank)
     size_t n = hdr->name_len;
     if (n >= MAX_FUNC_NAME) n = MAX_FUNC_NAME - 1;
     memcpy(cname, name, n); cname[n] = '\0';
+    log_debug("Received FUNC_ANNOUNCE of %s from rank=%u (len=%zu)", cname, src_rank, len);
 
     /* Try resolve pointer (optional). dlsym needs -rdynamic at link. */
     void *sym = dlsym(RTLD_DEFAULT, cname);
@@ -74,7 +78,7 @@ static void handle_func_announce(const void *buf, size_t len, uint32_t src_rank)
     }
 
     log_info("FUNC_ANNOUNCE: name=%s id=%u from rank=%u (fn=%p)",
-             cname, hdr->func_id, src_rank, (void*)fn);
+            cname, hdr->func_id, src_rank, (void*)fn);
 }
 
 
@@ -205,19 +209,25 @@ void dispatch_msg(void *buf, size_t len, ucp_tag_t tag)
     }
 }
 
-/* ----------- 内部：尝试接收一个“请求类”opcode ----------- */
-/* 为避免与 API 抢包，这里仅探测 opcode 的高 32 位 */
+/* Try to receive one message of a given request opcode.
+* Returns 1 if a message was received & dispatched, else 0.
+*/
 static int try_recv_request_opcode(int opcode)
 {
     ucp_worker_h worker = g_ctx.ucx_ctx.ucp_worker;
+
+    ucp_tag_recv_info_t info;
     ucp_tag_message_h msg =
-        ucp_tag_probe_nb(worker, TAG_MAKE(opcode, 0), TAG_MASK_OPCODE, 0, NULL);
+        ucp_tag_probe_nb(worker, TAG_MAKE(opcode, 0), TAG_MASK_OPCODE, /*remove=*/1, &info);
     if (msg == NULL) return 0; /* no message */
 
+    size_t real_len = info.length;
+    if (real_len == 0) real_len = 1; /* UCX 不保证非零，至少给1字节 */
+
     /* 收取该消息（用固定缓冲区大小；如需更大消息，请扩展协议/分段） */
-    char *rbuf = (char*)malloc(DISPATCH_MAX_MSG);
+    char *rbuf = (char*)malloc(real_len);
     if (!rbuf) {
-        log_error("malloc DISPATCH_MAX_MSG failed");
+        log_error("dispatcher: malloc %zu failed", real_len);
         return 0;
     }
 
@@ -226,23 +236,30 @@ static int try_recv_request_opcode(int opcode)
     prm.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
     prm.datatype     = ucp_dt_make_contig(1);
 
-    ucs_status_ptr_t r = ucp_tag_msg_recv_nbx(worker, rbuf, DISPATCH_MAX_MSG, msg, &prm);
-    if (UCS_PTR_IS_PTR(r)) {
+    ucs_status_ptr_t rreq = ucp_tag_msg_recv_nbx(worker, rbuf, real_len, msg, &prm);
+    if (UCS_PTR_IS_PTR(rreq)) {
         /* 轮询直到完成 */
         ucs_status_t st;
         do {
             ucp_worker_progress(worker);
-            st = ucp_request_check_status(r);
+            st = ucp_request_check_status(rreq);
         } while (st == UCS_INPROGRESS);
-        ucp_request_free(r);
+        ucp_request_free(rreq);
+        if (st != UCS_OK) {
+            log_warn("dispatcher: recv completion status=%d", (int)st);
+            free(rbuf);
+            return 1; /* 已经拿走了消息，但失败，返回1避免死循环 */
+        }
+    } else {
+        ucs_status_t st = UCS_PTR_STATUS(rreq);
+        if (st != UCS_OK) {
+            log_warn("dispatcher: recv immediate status=%d", (int)st);
+            free(rbuf);
+            return 1;
+        }
     }
 
-    /* 这里没法得到实际 len（UCX 不返回）；粗略用最大值。
-    * 为安全起见，建议你的协议里给每个变长消息前面放一个长度字段，
-    * 或者在 app 层用更严格的 framing。CREATE_REQ 已含 arg_len，可用于二次校验。*/
-    size_t fake_len = DISPATCH_MAX_MSG;
-    ucp_tag_t fake_tag = TAG_MAKE(opcode, /*src*/0); /* 源 rank 不精确，仅用于分发 */
-    dispatch_msg(rbuf, fake_len, fake_tag);
+    dispatch_msg(rbuf, real_len, info.sender_tag);
 
     free(rbuf);
     return 1;
@@ -251,17 +268,25 @@ static int try_recv_request_opcode(int opcode)
 /* ----------- 对外：手动推进一次 ----------- */
 void dispatcher_progress_once(void)
 {
+    ucp_worker_h worker = g_ctx.ucx_ctx.ucp_worker;
+
+    /* 无条件先推进一次，驱动 wireup/收发完成 */
+    ucp_worker_progress(worker);
+
     /* 只探测请求类 opcode，避免与 API 对响应竞争 */
-    static const int req_ops[] = { OP_CREATE_REQ, OP_JOIN_REQ, OP_EXIT_NOTIFY };
+    static const int req_ops[] = { OP_FUNC_ANNOUNCE, OP_CREATE_REQ, OP_JOIN_REQ, OP_EXIT_NOTIFY, OP_JOIN_REQ, OP_JOIN_RESP };
     int progressed = 0;
 
     for (size_t i = 0; i < sizeof(req_ops)/sizeof(req_ops[0]); i++) {
         progressed |= try_recv_request_opcode(req_ops[i]);
+        /* 每次处理后再推进一次，减少延迟 */
+        ucp_worker_progress(worker);
     }
 
     /* 无事可做时小睡片刻，避免空转；有 UCX 事件fd时可改为 poll/epoll */
     if (!progressed) {
         usleep(2000); /* 2ms */
+        ucp_worker_progress(worker);
     }
 }
 

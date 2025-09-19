@@ -127,10 +127,11 @@ int ucx_init(ucx_context_t *ucx, tcp_config_t *cfg, int rank)
     }
 
     if (ucx_tcp_create_all_eps(ucx->ucp_context, ucx->ucp_worker,
-                               rank, cfg->world_size,
-                               tbl_addrs, tbl_lens, ucx->eps) != 0) {
+                            rank, cfg->world_size,
+                            tbl_addrs, tbl_lens, ucx->eps) != 0) {
         log_warn("ucx_init: Some UCX endpoints may have failed");
     }
+    log_debug("ucx_init: UCX endpoints created");
 
     for (int i = 0; i < cfg->world_size; ++i) {
         free(tbl_addrs[i]); tbl_addrs[i] = NULL;
@@ -184,7 +185,7 @@ static inline ucp_worker_h W(void) { return g_ctx.ucx_ctx.ucp_worker; }
 static inline ucp_ep_h     EP(int r){ return g_ctx.ucx_ctx.eps ? g_ctx.ucx_ctx.eps[r] : NULL; }
 
 /* Send a contiguous byte buffer to dest_rank with (hi32=opcode, lo32=src).
- * Returns 0 on success, nonzero on error. */
+* Returns 0 on success, nonzero on error. */
 int ucx_send_bytes(int dest_rank, const void *buf, size_t len, int opcode)
 {
     if (dest_rank < 0 || dest_rank >= g_ctx.world_size) return -1;
@@ -282,6 +283,7 @@ int ucx_broadcast_bytes(const void *buf, size_t len, int opcode)
             rc = -1; break;
         }
     }
+    log_debug("func name broadcast: broadcast complete (opcode=%d len=%zu)", opcode, len);
     return rc;
 }
 
@@ -318,4 +320,3 @@ int ucx_tcp_create_all_eps(ucp_context_h context,
     }
     return rc_all;
 }
-
