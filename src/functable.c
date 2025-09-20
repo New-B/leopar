@@ -91,7 +91,7 @@ int functable_register(const char *name, void *(*fn)(void*))
         return -1;
     }
 
-    log_info("Registered function name=%s id=%d (local)", name, new_id);
+    log_info("Registered function name=%s id=%d (local func entry point = %p)", name, new_id, (void*)fn);
 
     /* 3) broadcast announce (best-effort, out of lock) */
     {
