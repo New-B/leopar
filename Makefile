@@ -70,7 +70,8 @@ OBJS     := $(SRCS:.c=.o)
 
 # Demo programs (add more demos here)
 DEMOS    := leoparDemo_create_join \
-            leopar_api_multi_nodes_demo #\
+            leopar_api_multi_nodes_demo \
+            leopar_byval_demo #\
             leopar_barrier_demo \
             leopar_mutex_demo
 
