@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <unistd.h>     /* sleep */
 
 /* Small by-value argument payload. Keep it POD and small (e.g., <= few KB). */
 struct Args {
@@ -74,59 +75,64 @@ int main(int argc, char **argv)
 
     int world = leo_world_size();
 
-    /* Optional: sync all ranks before starting the demo. */
-    (void)leo_barrier();
+    // /* Optional: sync all ranks before starting the demo. */
+    // (void)leo_barrier();
 
     /* Create tasks with round-robin placement across ranks. */
-    leo_thread_t *tids = (leo_thread_t*)malloc(sizeof(leo_thread_t) * num_tasks);
-    if (!tids) {
-        fprintf(stderr, "alloc tids failed\n");
-        leopar_finalize();
-        return 1;
-    }
+    if (my_rank == 0) {
+        leo_thread_t *tids = (leo_thread_t*)malloc(sizeof(leo_thread_t) * num_tasks);
+        if (!tids) {
+            fprintf(stderr, "alloc tids failed\n");
+            leopar_finalize();
+            return 1;
+        }
 
-    for (int t = 0; t < num_tasks; ++t) {
-        /* Build a small POD arg and heap-allocate it.
-        The runtime will copy this buffer into the message,
-        and the *remote* thread will receive its own malloc'ed copy. */
-        struct Args *a = (struct Args*)malloc(sizeof(*a));
-        if (!a) { fprintf(stderr, "alloc arg failed at t=%d\n", t); break; }
+        for (int t = 0; t < num_tasks; ++t) {
+            /* Build a small POD arg and heap-allocate it.
+            The runtime will copy this buffer into the message,
+            and the *remote* thread will receive its own malloc'ed copy. */
+            struct Args *a = (struct Args*)malloc(sizeof(*a));
+            if (!a) { fprintf(stderr, "alloc arg failed at t=%d\n", t); break; }
 
-        a->id    = t;
-        a->start = t * span;
-        a->end   = a->start + span;
+            a->id    = t;
+            a->start = t * span;
+            a->end   = a->start + span;
 
-        int target_rank = (world > 0) ? (t % world) : 0;  /* round-robin */
+            int target_rank = (world > 0) ? (t % world) : 0;  /* round-robin */
 
-        int rc = leo_thread_create(&tids[t],
-                                /*attr=*/NULL,
-                                worker_sum,
-                                /*arg(by value)*/ a,
-                                /*target*/ target_rank);
-        if (rc != 0) {
-            fprintf(stderr, "leo_thread_create failed at t=%d (rc=%d)\n", t, rc);
+            int rc = leo_thread_create(&tids[t],
+                                    /*attr=*/NULL,
+                                    worker_sum,
+                                    /*arg(by value)*/ a,
+                                    /*target*/ target_rank);
+            if (rc != 0) {
+                fprintf(stderr, "leo_thread_create failed at t=%d (rc=%d)\n", t, rc);
+                free(a);
+                /* continue or abort as you wish; here we abort the loop */
+                num_tasks = t;
+                break;
+            }
+
+            /* IMPORTANT: free our local copy immediately — runtime has already serialized it. */
             free(a);
-            /* continue or abort as you wish; here we abort the loop */
-            num_tasks = t;
-            break;
         }
 
-        /* IMPORTANT: free our local copy immediately — runtime has already serialized it. */
-        free(a);
-    }
-
-    /* Join all tasks (across nodes). */
-    for (int t = 0; t < num_tasks; ++t) {
-        int rc = leo_thread_join(tids[t], /*retval*/NULL);
-        if (rc != 0) {
-            fprintf(stderr, "leo_thread_join failed at t=%d (rc=%d)\n", t, rc);
+        /* Join all tasks (across nodes). */
+        for (int t = 0; t < num_tasks; ++t) {
+            int rc = leo_thread_join(tids[t], /*retval*/NULL);
+            if (rc != 0) {
+                fprintf(stderr, "leo_thread_join failed at t=%d (rc=%d)\n", t, rc);
+            }
         }
+
+        free(tids);
+    } else {
+        printf("[rank%d] Ready to execute remote threads. Waiting...\n", my_rank);
+        sleep(2);
+        printf("[rank%d] Done waiting.\n", my_rank);
     }
-
-    free(tids);
-
-    /* Optional: sync before teardown. */
-    (void)leo_barrier();
+    // /* Optional: sync before teardown. */
+    // (void)leo_barrier();
 
     leopar_finalize();
     return 0;
