@@ -29,8 +29,16 @@ enum {
     OP_JOIN_REQ    = 4,   /* join request */
     OP_JOIN_RESP   = 5,    /* join response */
 
+    /* barrier control */
+    OP_BARRIER_ARRIVE  = 6,   /* ranks -> rank0 */
+    OP_BARRIER_RELEASE = 7,   /* rank0 -> ranks */
+
     /* function table sync */
-    OP_FUNC_ANNOUNCE = 12  /* broadcast {name_len, name, func_id} */
+    OP_FUNC_ANNOUNCE = 12,  /* broadcast {name_len, name, func_id} */
+
+    /* ---- NEW: team (subset) barrier ---- */
+    OP_TB_ARRIVE      = 20,  /* team members -> leader */
+    OP_TB_RELEASE     = 21   /* leader -> team members */
 };
 
 /* ---------- Message Structures ----------
@@ -88,6 +96,30 @@ typedef struct {
     uint64_t gtid;          /* same as request */
     int32_t  done;          /* 1 = completed */
 } msg_join_resp_t;
+
+/*  barrier arrive/release */
+typedef struct {
+    uint32_t opcode;        /* OP_BARRIER_ARRIVE */
+    uint32_t epoch;         /* barrier generation id */
+} msg_barrier_arrive_t;
+
+typedef struct {
+    uint32_t opcode;        /* OP_BARRIER_RELEASE */
+    uint32_t epoch;         /* barrier generation id */
+} msg_barrier_release_t;
+
+typedef struct {
+    uint32_t opcode;        /* OP_TB_ARRIVE */
+    uint32_t epoch;         /* barrier generation id within the team */
+    uint64_t team_id;       /* deterministic team id */
+    uint32_t sender_rank;   /* NEW: rank of the arriving member */
+} msg_tb_arrive_t;
+
+typedef struct {
+    uint32_t opcode;        /* OP_TB_RELEASE */
+    uint32_t epoch;         /* barrier generation id within the team */
+    uint64_t team_id;       /* deterministic team id */
+} msg_tb_release_t;
 
 #pragma pack(pop)
 
