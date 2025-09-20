@@ -20,9 +20,11 @@
  */
 
 #include "leopar.h"
+#include "log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <inttypes.h>   /* for PRIu64 */
 #include <unistd.h>     /* sleep */
 
 /* Small by-value argument payload. Keep it POD and small (e.g., <= few KB). */
@@ -33,17 +35,16 @@ struct Args {
 };
 
 /* Worker executed on the destination rank. It must free(arg) after use. */
-static void* worker_sum(void *p)
+void* worker_sum(void *p)
 {
     struct Args *a = (struct Args*)p;
-    int me = leo_rank();  /* LeoPar runtime query: my rank */
+    int my_rank = leo_rank();  /* LeoPar runtime query: my rank */
 
     long long sum = 0;
     for (int i = a->start; i < a->end; ++i) sum += i;
 
     /* Print to stdout just for demo observability. */
-    printf("[rank %d] worker id=%d args=[%d,%d) sum=%lld\n",
-        me, a->id, a->start, a->end, sum);
+    log_debug("worker id=%d args=[%d,%d) sum=%lld",my_rank, a->id, a->start, a->end, sum);
 
     /* IMPORTANT: free the by-value copy delivered by the runtime. */
     free(a);
@@ -63,7 +64,7 @@ int main(int argc, char **argv)
 
     /* 1) Initialize LeoPar runtime (handles config, UCX, dispatcher, logging) */
     if (leopar_init(config, my_rank, log_path) != 0) {
-        fprintf(stderr, "leopar_init failed\n");
+        log_debug("leopar_init failed");
         return 1;
     }
 
@@ -82,7 +83,7 @@ int main(int argc, char **argv)
     if (my_rank == 0) {
         leo_thread_t *tids = (leo_thread_t*)malloc(sizeof(leo_thread_t) * num_tasks);
         if (!tids) {
-            fprintf(stderr, "alloc tids failed\n");
+            log_error("alloc tids failed\n");
             leopar_finalize();
             return 1;
         }
@@ -92,7 +93,7 @@ int main(int argc, char **argv)
             The runtime will copy this buffer into the message,
             and the *remote* thread will receive its own malloc'ed copy. */
             struct Args *a = (struct Args*)malloc(sizeof(*a));
-            if (!a) { fprintf(stderr, "alloc arg failed at t=%d\n", t); break; }
+            if (!a) { log_error("alloc arg failed at t=%d\n", t); break; }
 
             a->id    = t;
             a->start = t * span;
@@ -100,18 +101,21 @@ int main(int argc, char **argv)
 
             int target_rank = (world > 0) ? (t % world) : 0;  /* round-robin */
 
+            log_debug("[rank0] creating task %d on rank %d with args=[%d,%d)", t, target_rank, a->start, a->end);
+
             int rc = leo_thread_create(&tids[t],
                                     /*attr=*/NULL,
                                     worker_sum,
                                     /*arg(by value)*/ a,
                                     /*target*/ target_rank);
             if (rc != 0) {
-                fprintf(stderr, "leo_thread_create failed at t=%d (rc=%d)\n", t, rc);
+                log_error("leo_thread_create failed at t=%d (rc=%d)\n", t, rc);
                 free(a);
                 /* continue or abort as you wish; here we abort the loop */
                 num_tasks = t;
                 break;
             }
+            log_debug("[rank0] created task %d on rank %d (gtid=%" PRIu64 ")\n", t, target_rank, (uint64_t)tids[t]);
 
             /* IMPORTANT: free our local copy immediately — runtime has already serialized it. */
             free(a);
@@ -121,15 +125,15 @@ int main(int argc, char **argv)
         for (int t = 0; t < num_tasks; ++t) {
             int rc = leo_thread_join(tids[t], /*retval*/NULL);
             if (rc != 0) {
-                fprintf(stderr, "leo_thread_join failed at t=%d (rc=%d)\n", t, rc);
+                log_error("leo_thread_join failed at t=%d (rc=%d)\n", t, rc);
             }
         }
 
         free(tids);
     } else {
-        printf("[rank%d] Ready to execute remote threads. Waiting...\n", my_rank);
+        log_debug("[rank%d] Ready to execute remote threads. Waiting...", my_rank);
         sleep(2);
-        printf("[rank%d] Done waiting.\n", my_rank);
+        log_debug("[rank%d] Done waiting.", my_rank);
     }
     // /* Optional: sync before teardown. */
     // (void)leo_barrier();
