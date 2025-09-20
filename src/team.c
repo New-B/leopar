@@ -124,7 +124,7 @@ int leo_team_barrier_timeout(leo_team_t team, int64_t timeout_ms)
         for (;;) {
             size_t len=0; ucp_tag_t tag=0; ucp_tag_recv_info_t info;
             void *buf = ucx_recv_any_alloc(&len, &tag, &info);
-            if (!buf) { dispatcher_progress_once(); usleep(1000); goto check_to; }
+            if (!buf) { dispatcher_progress_once(); usleep(1000); goto check_to_nl; }  //if not leader
 
             uint32_t opcode = (uint32_t)(tag >> 32);
             uint32_t src    = (uint32_t)(tag & 0xffffffffu);
@@ -135,7 +135,7 @@ int leo_team_barrier_timeout(leo_team_t team, int64_t timeout_ms)
             dispatch_msg(buf, len, tag);
             free(buf);
 
-        check_to:
+            check_to_nl:
             if (timeout_ms >= 0) {
                 struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
                 unsigned long long now = (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)ts.tv_nsec / 1000000ull;
@@ -157,7 +157,7 @@ int leo_team_barrier_timeout(leo_team_t team, int64_t timeout_ms)
                 ((uint64_t)OP_TB_ARRIVE) << 32,
                 0xffffffff00000000ull,
                 0, NULL);
-            if (!msg) { dispatcher_progress_once(); usleep(1000); goto check_to; }
+            if (!msg) { dispatcher_progress_once(); usleep(1000); goto check_to_l; }  //if leader
 
             msg_tb_arrive_t a;
             ucp_request_param_t prm; memset(&prm, 0, sizeof(prm));
@@ -182,7 +182,7 @@ int leo_team_barrier_timeout(leo_team_t team, int64_t timeout_ms)
                     ++arrived;
                 }
             }
-        check_to:
+        check_to_l:
             if (timeout_ms >= 0) {
                 struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
                 unsigned long long now = (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)ts.tv_nsec / 1000000ull;
