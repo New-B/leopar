@@ -33,7 +33,7 @@ struct Args {
 };
 
 /* Worker executed on the destination rank. It must free(arg) after use. */
-static void* worker_sum(void *p)
+void* worker_sum(void *p)
 {
     struct Args *a = (struct Args*)p;
     int me = leo_rank();  /* LeoPar runtime query: my rank */
