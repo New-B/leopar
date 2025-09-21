@@ -23,6 +23,8 @@ typedef struct {
     int *rank_threads;    /* number of threads per rank */
     int default_threads;  /* default threads per process */
 
+    int dsm_pool_mb;    /* per-rank DSM pool size in MB */
+
     tcp_config_t tcp_cfg; /* UCX TCP config */
     ucx_context_t ucx_ctx;    /* embedded UCX context */
 } leopar_context_t;

@@ -72,6 +72,14 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
         log_error("Thread table init failed for rank=%d", g_ctx.rank);
         return -1;
     }
+
+    /* 6. Initialize DSM (local arena + rkey exchange) */
+    size_t pool_bytes = (g_ctx.dsm_pool_mb > 0 ? (size_t)g_ctx.dsm_pool_mb << 20 : (64ull<<20));
+    if (dsm_init(pool_bytes) != 0) { 
+        log_error("DSM init failed"); 
+        return -1; 
+    }   
+
     log_info("Thread table initialized (capacity=%d)", MAX_LOCAL_THREADS);
 
     log_info("LeoPar runtime initialized successfully at rank %d", g_ctx.rank);
@@ -91,6 +99,8 @@ void leopar_finalize(void)
     }
 
     dispatcher_stop();
+
+    dsm_finalize();
 
     /* 3. Close log system */
     log_info("LeoPar runtime finalized at rank %d", g_ctx.rank);

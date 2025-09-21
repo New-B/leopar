@@ -47,6 +47,7 @@ HEADERS  := include/leopar.h \
             include/functable.h \
             include/threadtable.h \
             include/scheduler.h \
+            include/dsm.h \
             include/log.h
 
 # ===== Runtime sources =====
@@ -64,6 +65,7 @@ SRCS     := $(SRC_DIR)/leopar.c \
             $(SRC_DIR)/team.c \
             $(SRC_DIR)/attr.c \
             $(SRC_DIR)/query.c \
+            $(SRC_DIR)/dsm.c \
             $(SRC_DIR)/log.c 
 
 OBJS     := $(SRCS:.c=.o)
@@ -71,7 +73,8 @@ OBJS     := $(SRCS:.c=.o)
 # Demo programs (add more demos here)
 DEMOS    := leoparDemo_create_join \
             leopar_api_multi_nodes_demo \
-            leopar_byval_demo #\
+            leopar_byval_demo \
+            dsm_smoke #\
             leopar_barrier_demo \
             leopar_mutex_demo
 
