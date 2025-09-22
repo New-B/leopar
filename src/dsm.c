@@ -24,6 +24,10 @@
 #include <inttypes.h>
 #include <unistd.h>
 
+#ifndef CLOCK_REALTIME
+#define CLOCK_REALTIME 0
+#endif
+
 /* ---- Control-plane message for DSM rkey announce ---- */
 typedef struct {
     uint32_t opcode;     /* custom: OP_DSM_ANN = 30 (pick a free code) */
@@ -31,23 +35,25 @@ typedef struct {
     uint64_t base_addr;  /* remote virtual address of arena base */
 } msg_dsm_ann_t;
 
-/* Choose an unused opcode in your proto.h; keep consistent everywhere */
-#ifndef OP_DSM_ANN
-#define OP_DSM_ANN 30
-#endif
+
+/* ---------- Ready-count and CV for announce collection ---------- */
+static pthread_mutex_t g_ann_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_ann_cv  = PTHREAD_COND_INITIALIZER;
+/* number of peers (excluding self) whose rkey/base have been received */
+static int g_peers_ready = 0;
 
 /* ---- DSM global state ---- */
 typedef struct {
     /* Local arena */
-    void        *arena_base;
-    size_t       arena_bytes;
+    void        *arena_base;     /* local mapped base */
+    size_t       arena_bytes;    /* size of local arena */
     size_t       bump;           /* bump-pointer offset */
-    pthread_mutex_t alloc_mtx;
+    pthread_mutex_t alloc_mtx;   /* protects bump-pointer */
 
     /* UCX memory handle and rkey */
-    ucp_mem_h    memh;
+    ucp_mem_h    memh;           /* UCX mem handle for local arena */
     void        *packed_rkey;    /* bytes to send to peers */
-    size_t       packed_len;
+    size_t       packed_len;     /* length of packed_rkey */
 
     /* Per-peer remote base and rkey handle */
     uint64_t    *peer_base;      /* remote virtual base address per rank */
@@ -56,6 +62,89 @@ typedef struct {
 } dsm_state_t;
 
 static dsm_state_t g_dsm;
+
+/* Utility: timespec add milliseconds */
+static void _deadline_from_now(struct timespec *ts, int timeout_ms) {
+    clock_gettime(CLOCK_REALTIME, ts);
+    if (timeout_ms <= 0) return;
+    ts->tv_sec  += timeout_ms / 1000;
+    ts->tv_nsec += (timeout_ms % 1000) * 1000000L;
+    if (ts->tv_nsec >= 1000000000L) { ts->tv_sec += 1; ts->tv_nsec -= 1000000000L; }
+}
+
+
+/* ---------- Called by dispatcher upon receiving OP_DSM_ANN ---------- */
+void dsm_on_announce(const void *buf, size_t len, uint32_t src_rank)
+{
+    if (len < sizeof(msg_dsm_ann_t)) {
+        log_error("DSM: ANN too short from %u", src_rank);
+        return;
+    }
+    const msg_dsm_ann_t *mh = (const msg_dsm_ann_t*)buf;
+    if (mh->opcode != OP_DSM_ANN) {
+        log_warn("DSM: ANN wrong opcode=%u from %u", mh->opcode, src_rank);
+        return;
+    }
+    if (len < sizeof(*mh) + mh->rkey_len) {
+        log_error("DSM: ANN malformed rkey_len from %u", src_rank);
+        return;
+    }
+    if (src_rank >= (uint32_t)g_ctx.world_size) {
+        log_error("DSM: ANN invalid src=%u", src_rank);
+        return;
+    }
+
+    /* If already have this peer, ignore duplicates (idempotent) */
+    if (g_dsm.have_peer[src_rank]) {
+        log_debug("DSM: duplicate ANN from %u ignored", src_rank);
+        return;
+    }
+
+    /* Unpack rkey for this endpoint */
+    ucp_rkey_h rkey = NULL;
+    const void *packed = (const void*)(mh + 1);
+    ucs_status_t st = ucp_ep_rkey_unpack(g_ctx.ucx_ctx.eps[src_rank], (void*)packed, &rkey);
+    if (st != UCS_OK) {
+        log_error("DSM: rkey_unpack failed from %u", src_rank);
+        return;
+    }
+
+    /* Publish into caches */
+    g_dsm.peer_base[src_rank] = mh->base_addr;
+    g_dsm.peer_rkey[src_rank] = rkey;
+    g_dsm.have_peer[src_rank] = 1;
+
+    /* Accounting */
+    pthread_mutex_lock(&g_ann_mtx);
+    g_peers_ready++;
+    pthread_cond_broadcast(&g_ann_cv);
+    pthread_mutex_unlock(&g_ann_mtx);
+
+    log_info("DSM: got rkey from rank %u base=0x%llx len=%u",
+             src_rank, (unsigned long long)mh->base_addr, mh->rkey_len);
+}
+
+/* ---------- Wait until all (world_size-1) peers announced or timeout ---------- */
+int dsm_wait_announces(int timeout_ms)
+{
+    int target = g_ctx.world_size - 1; /* excluding self */
+    pthread_mutex_lock(&g_ann_mtx);
+    if (timeout_ms <= 0) {
+        while (g_peers_ready < target) {
+            pthread_cond_wait(&g_ann_cv, &g_ann_mtx);
+        }
+        pthread_mutex_unlock(&g_ann_mtx);
+        return 0;
+    } else {
+        struct timespec dl; _deadline_from_now(&dl, timeout_ms);
+        while (g_peers_ready < target) {
+            int rc = pthread_cond_timedwait(&g_ann_cv, &g_ann_mtx, &dl);
+            if (rc == ETIMEDOUT) { pthread_mutex_unlock(&g_ann_mtx); return -ETIMEDOUT; }
+        }
+        pthread_mutex_unlock(&g_ann_mtx);
+        return 0;
+    }
+}
 
 /* ---- Helpers: UCX request wait ---- */
 static int ucx_wait(ucs_status_ptr_t req)
@@ -96,7 +185,7 @@ int dsm_init(size_t local_pool_bytes)
     mp.address    = base;
     mp.length     = local_pool_bytes;
 
-    ucs_status_t st = ucp_mem_map(g_ctx.ucx_ctx.ucp_context, &mp, &g_dsm.memh);
+    ucs_status_t st = ucp_mem_map(g_ctx.ucx_ctx.ucp_context, &mp, &g_dsm.memh); //pin the memory to ucx, generate mem handle(memh)
     if (st != UCS_OK) {
         log_error("DSM: ucp_mem_map failed");
         free(base);
@@ -104,7 +193,7 @@ int dsm_init(size_t local_pool_bytes)
     }
 
     void *rkey_buf = NULL; size_t rkey_len = 0;
-    st = ucp_rkey_pack(g_ctx.ucx_ctx.ucp_context, g_dsm.memh, &rkey_buf, &rkey_len);
+    st = ucp_rkey_pack(g_ctx.ucx_ctx.ucp_context, g_dsm.memh, &rkey_buf, &rkey_len); /* 把授权打包成字节串*/
     if (st != UCS_OK) {
         log_error("DSM: ucp_rkey_pack failed");
         ucp_mem_unmap(g_ctx.ucx_ctx.ucp_context, g_dsm.memh);
@@ -130,12 +219,13 @@ int dsm_init(size_t local_pool_bytes)
         return -1;
     }
 
-    /* Fill self entry */
+    /* Fill self entry, mark self as available */
     g_dsm.peer_base[g_ctx.rank] = (uint64_t)(uintptr_t)g_dsm.arena_base;
     g_dsm.have_peer[g_ctx.rank] = 1;
+    g_peers_ready = 0; /* reset counter for peers (excluding self) */
     /* Self rkey: can unpack to self ep if you want, but local path will memcpy. */
 
-    /* Announce to all peers and collect theirs */
+    /* build my ANN packet */
     msg_dsm_ann_t hdr; memset(&hdr, 0, sizeof(hdr));
     hdr.opcode    = OP_DSM_ANN;
     hdr.rkey_len  = (uint32_t)g_dsm.packed_len;
@@ -147,54 +237,69 @@ int dsm_init(size_t local_pool_bytes)
     memcpy(pkt + sizeof(hdr), g_dsm.packed_rkey, g_dsm.packed_len);
 
     for (int r = 0; r < W; ++r) if (r != g_ctx.rank) {
-        (void)ucx_send_bytes(r, pkt, pkt_len, OP_DSM_ANN);
+        int rc = ucx_send_bytes(r, pkt, pkt_len, OP_DSM_ANN);
+        if (rc != 0) {
+            log_error("DSM: send ANN to rank %d failed rc=%d", r, rc);
+        }
     }
     free(pkt);
 
-    /* Receive from W-1 peers */
-    int need = W - 1;
-    while (need > 0) {
-        size_t len=0; ucp_tag_t tag=0; ucp_tag_recv_info_t info;
-        void *buf = ucx_recv_any_alloc(&len, &tag, &info);
-        if (!buf) { dispatcher_progress_once(); usleep(1000); continue; }
-
-        uint32_t opcode = (uint32_t)(tag >> 32);
-        uint32_t src    = (uint32_t)(tag & 0xffffffffu);
-
-        if (opcode == OP_DSM_ANN && len >= sizeof(msg_dsm_ann_t)) {
-            msg_dsm_ann_t *mh = (msg_dsm_ann_t*)buf;
-            if (len < sizeof(*mh) + mh->rkey_len) {
-                log_error("DSM: malformed ANN from %u", src);
-                free(buf);
-                continue;
-            }
-            if (!g_dsm.have_peer[src]) {
-                g_dsm.peer_base[src] = mh->base_addr;
-
-                ucp_rkey_h rkey = NULL;
-                ucs_status_t st2 = ucp_ep_rkey_unpack(g_ctx.ucx_ctx.eps[src],
-                                                    (void*)(mh+1), &rkey);
-                if (st2 != UCS_OK) {
-                    log_error("DSM: rkey_unpack failed from %u", src);
-                    free(buf);
-                    continue;
-                }
-                g_dsm.peer_rkey[src] = rkey;
-                g_dsm.have_peer[src] = 1;
-                --need;
-                log_info("DSM: got rkey from rank %u base=0x%llx len=%u",
-                        src, (unsigned long long)mh->base_addr, mh->rkey_len);
-            }
-            free(buf);
-        } else {
-            /* Not a DSM msg: hand over to dispatcher (create/join/announce etc.) */
-            dispatch_msg(buf, len, tag);
-            free(buf);
-        }
+    /* wait others’ ANN handled by dispatcher */
+    int tmo = g_ctx.tcp_cfg.connect_timeout_ms > 0 ? g_ctx.tcp_cfg.connect_timeout_ms*2 : 10000;
+    int wrc = dsm_wait_announces(tmo);
+    if (wrc != 0) {
+        log_error("DSM: wait announces timeout/failed (ready=%d of %d)",
+                  g_peers_ready, g_ctx.world_size-1);
+        return -1;
     }
 
     log_info("DSM init done: arena=%p size=%zu", g_dsm.arena_base, g_dsm.arena_bytes);
     return 0;
+
+    // /* Receive from W-1 peers */
+    // int need = W - 1;
+    // while (need > 0) {
+    //     size_t len=0; ucp_tag_t tag=0; ucp_tag_recv_info_t info;
+    //     void *buf = ucx_recv_any_alloc(&len, &tag, &info);
+    //     if (!buf) { dispatcher_progress_once(); usleep(1000); continue; }
+
+    //     uint32_t opcode = (uint32_t)(tag >> 32);
+    //     uint32_t src    = (uint32_t)(tag & 0xffffffffu);
+
+    //     if (opcode == OP_DSM_ANN && len >= sizeof(msg_dsm_ann_t)) {
+    //         msg_dsm_ann_t *mh = (msg_dsm_ann_t*)buf;
+    //         if (len < sizeof(*mh) + mh->rkey_len) {
+    //             log_error("DSM: malformed ANN from %u", src);
+    //             free(buf);
+    //             continue;
+    //         }
+    //         if (!g_dsm.have_peer[src]) {
+    //             g_dsm.peer_base[src] = mh->base_addr;
+
+    //             ucp_rkey_h rkey = NULL;
+    //             ucs_status_t st2 = ucp_ep_rkey_unpack(g_ctx.ucx_ctx.eps[src],
+    //                                                 (void*)(mh+1), &rkey);
+    //             if (st2 != UCS_OK) {
+    //                 log_error("DSM: rkey_unpack failed from %u", src);
+    //                 free(buf);
+    //                 continue;
+    //             }
+    //             g_dsm.peer_rkey[src] = rkey;
+    //             g_dsm.have_peer[src] = 1;
+    //             --need;
+    //             log_info("DSM: got rkey from rank %u base=0x%llx len=%u",
+    //                     src, (unsigned long long)mh->base_addr, mh->rkey_len);
+    //         }
+    //         free(buf);
+    //     } else {
+    //         /* Not a DSM msg: hand over to dispatcher (create/join/announce etc.) */
+    //         dispatch_msg(buf, len, tag);
+    //         free(buf);
+    //     }
+    // }
+
+    // log_info("DSM init done: arena=%p size=%zu", g_dsm.arena_base, g_dsm.arena_bytes);
+    // return 0;
 }
 
 void dsm_finalize(void)

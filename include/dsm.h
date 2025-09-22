@@ -48,6 +48,12 @@ int leo_read(void *dst, leo_gaddr_t g, size_t n);
 /* Write n bytes from local buffer src to global pointer g. */
 int leo_write(leo_gaddr_t g, const void *src, size_t n);
 
+/* NEW: dispatcher will call this when OP_DSM_ANN arrives */
+void dsm_on_announce(const void *buf, size_t len, uint32_t src_rank);
+
+/* NEW: dsm_init 在广播自身通告后调用它等待所有同伴通告就绪（超时 ms；<=0 表示无限等） */
+int  dsm_wait_announces(int timeout_ms);
+
 #ifdef __cplusplus
 }
 #endif

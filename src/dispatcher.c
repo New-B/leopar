@@ -17,6 +17,7 @@
 #include "threadtable.h"
 #include "log.h"
 #include "tid.h"
+#include "dsm.h"
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -194,6 +195,8 @@ void dispatch_msg(void *buf, size_t len, ucp_tag_t tag)
         case OP_FUNC_ANNOUNCE: handle_func_announce(buf, len, src_rank); break;
         case OP_CREATE_REQ: handle_create_req(buf, len, src_rank); break;
         case OP_JOIN_REQ:   handle_join_req(buf, len, src_rank);   break;
+        /* NEW: DSM announce */
+        case OP_DSM_ANN:       dsm_on_announce(buf,len,src_rank);      break;
         case OP_EXIT_NOTIFY:
             /* 这里可补：更新元数据/回收资源/转发通知等 */
             log_info("EXIT_NOTIFY received (len=%zu) from rank=%u", len, src_rank);
@@ -274,7 +277,7 @@ void dispatcher_progress_once(void)
     ucp_worker_progress(worker);
 
     /* 只探测请求类 opcode，避免与 API 对响应竞争 */
-    static const int req_ops[] = { OP_FUNC_ANNOUNCE, OP_CREATE_REQ, OP_JOIN_REQ, OP_EXIT_NOTIFY, OP_JOIN_REQ, OP_JOIN_RESP };
+    static const int req_ops[] = { OP_FUNC_ANNOUNCE, OP_CREATE_REQ, OP_JOIN_REQ, OP_EXIT_NOTIFY, OP_JOIN_REQ, OP_JOIN_RESP, OP_DSM_ANN };
     int progressed = 0;
 
     for (size_t i = 0; i < sizeof(req_ops)/sizeof(req_ops[0]); i++) {

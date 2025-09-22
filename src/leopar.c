@@ -77,6 +77,7 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
 
     /* 6. Initialize DSM (local arena + rkey exchange) */
     size_t pool_bytes = (g_ctx.dsm_pool_mb > 0 ? (size_t)g_ctx.dsm_pool_mb << 20 : (64ull<<20));
+    log_debug("Initializing DSM with local pool size %zu MB", g_ctx.dsm_pool_mb);
     if (dsm_init(pool_bytes) != 0) { 
         log_error("DSM init failed"); 
         return -1; 

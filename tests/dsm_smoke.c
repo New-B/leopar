@@ -1,6 +1,7 @@
 /* tests/dsm_smoke.c */
 #include "leopar.h"   /* for init/finalize */
 #include "dsm.h"
+#include "log.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -25,6 +26,7 @@ int main(int argc, char **argv) {
     /* Each rank allocates locally, writes its rank id, others read it. */
     leo_gaddr_t g = leo_malloc(64);
     char msg[64]; 
+    log_debug("leo_malloc returned gaddr=0x%llx", (unsigned long long)g);
     snprintf(msg, sizeof(msg), "hello-from-rank-%d", my_rank);
     leo_write(g, msg, strlen(msg)+1);
 
