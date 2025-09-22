@@ -186,13 +186,14 @@ int dsm_init(size_t local_pool_bytes)
                     UCP_MEM_MAP_PARAM_FIELD_LENGTH;
     mp.address    = base;
     mp.length     = local_pool_bytes;
-
+    log_debug("pinning memory to ucx!");
     ucs_status_t st = ucp_mem_map(g_ctx.ucx_ctx.ucp_context, &mp, &g_dsm.memh); //pin the memory to ucx, generate mem handle(memh)
     if (st != UCS_OK) {
         log_error("DSM: ucp_mem_map failed");
         free(base);
         return -1;
     }
+    log_debug("pinned memory to ucx");
 
     void *rkey_buf = NULL; size_t rkey_len = 0;
     st = ucp_rkey_pack(g_ctx.ucx_ctx.ucp_context, g_dsm.memh, &rkey_buf, &rkey_len); /* 把授权打包成字节串*/
