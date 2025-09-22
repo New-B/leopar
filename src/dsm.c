@@ -239,7 +239,7 @@ leo_gaddr_t leo_malloc(size_t n)
     g_dsm.bump += n;
     pthread_mutex_unlock(&g_dsm.alloc_mtx);
 
-    return LEO_GPTR_MAKE(g_ctx.rank, off);
+    return LEO_GADDR_MAKE(g_ctx.rank, off);
 }
 
 int leo_free(leo_gaddr_t g)
@@ -253,8 +253,8 @@ int leo_free(leo_gaddr_t g)
 int leo_read(void *dst, leo_gaddr_t g, size_t n)
 {
     if (g == 0 || n == 0) return 0;
-    int owner = LEO_GPTR_OWNER(g);
-    uint64_t off = LEO_GPTR_OFFSET(g);
+    int owner = LEO_GADDR_OWNER(g);
+    uint64_t off = LEO_GADDR_OFFSET(g);
 
     if ((off + n) > g_dsm.arena_bytes) {
         if (owner == g_ctx.rank) {
@@ -285,8 +285,8 @@ int leo_read(void *dst, leo_gaddr_t g, size_t n)
 int leo_write(leo_gaddr_t g, const void *src, size_t n)
 {
     if (g == 0 || n == 0) return 0;
-    int owner = LEO_GPTR_OWNER(g);
-    uint64_t off = LEO_GPTR_OFFSET(g);
+    int owner = LEO_GADDR_OWNER(g);
+    uint64_t off = LEO_GADDR_OFFSET(g);
 
     if (owner == g_ctx.rank) {
         memcpy((char*)g_dsm.arena_base + off, src, n);

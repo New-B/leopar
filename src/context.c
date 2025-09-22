@@ -61,7 +61,7 @@ int load_config(const char *filename, int my_rank)
         } else if (strncmp(line, "retry_max=", 10) == 0) {
             g_ctx.tcp_cfg.retry_max = atoi(line + 10);
         } else if (strncmp(line, "dsm_pool_mb=", 12) == 0) {
-            g_ctx.dsm_pool_mb = atoi(line + 10);
+            g_ctx.dsm_pool_mb = atoi(line + 12);
         } else if (strncmp(line, "secret=", 7) == 0) {
             strncpy(g_ctx.tcp_cfg.secret, line + 7, TCP_SECRET_MAX - 1);
             g_ctx.tcp_cfg.secret[TCP_SECRET_MAX - 1] = '\0';  /* ensure NUL */
