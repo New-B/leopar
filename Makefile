@@ -48,8 +48,10 @@ HEADERS  := include/leopar.h \
             include/threadtable.h \
             include/scheduler.h \
             include/dsm.h \
-            include/log.h
+            include/log.h \
+            include/barrier.h
 
+# ===== Runtime sources =====
 # ===== Runtime sources =====
 SRCS     := $(SRC_DIR)/leopar.c \
             $(SRC_DIR)/context.c \
@@ -60,13 +62,14 @@ SRCS     := $(SRC_DIR)/leopar.c \
             $(SRC_DIR)/threadtable.c \
             $(SRC_DIR)/scheduler.c \
             $(SRC_DIR)/sync.c \
-            $(SRC_DIR)/async.c \
-            $(SRC_DIR)/batch.c \
-            $(SRC_DIR)/team.c \
-            $(SRC_DIR)/attr.c \
             $(SRC_DIR)/query.c \
             $(SRC_DIR)/dsm.c \
-            $(SRC_DIR)/log.c 
+            $(SRC_DIR)/log.c \
+            $(SRC_DIR)/barrier.c
+#            $(SRC_DIR)/async.c \
+#            $(SRC_DIR)/batch.c \
+#            $(SRC_DIR)/team.c \
+#            $(SRC_DIR)/attr.c \
 
 OBJS     := $(SRCS:.c=.o)
 
