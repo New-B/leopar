@@ -218,6 +218,11 @@ int dsm_init(size_t local_pool_bytes)
         dsm_finalize();
         return -1;
     }
+    log_debug("DSM: local arena %p..%p (%zu bytes) registered",
+              g_dsm.arena_base,
+              (void*)((uintptr_t)g_dsm.arena_base + g_dsm.arena_bytes - 1),
+              g_dsm.arena_bytes);
+
 
     /* Fill self entry, mark self as available */
     g_dsm.peer_base[g_ctx.rank] = (uint64_t)(uintptr_t)g_dsm.arena_base;
@@ -243,6 +248,7 @@ int dsm_init(size_t local_pool_bytes)
         }
     }
     free(pkt);
+    log_debug("DSM: sent ANN to %d peers", W-1);
 
     /* wait others’ ANN handled by dispatcher */
     int tmo = g_ctx.tcp_cfg.connect_timeout_ms > 0 ? g_ctx.tcp_cfg.connect_timeout_ms*2 : 10000;
