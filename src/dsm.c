@@ -189,6 +189,7 @@ int dsm_init(size_t local_pool_bytes)
                     UCP_MEM_MAP_PARAM_FIELD_LENGTH;
     mp.address    = base;
     mp.length     = local_pool_bytes;
+    sleep(2);
     log_debug("pinning memory to ucx!");
     ucs_status_t st = ucp_mem_map(g_ctx.ucx_ctx.ucp_context, &mp, &g_dsm.memh); //pin the memory to ucx, generate mem handle(memh)
     if (st != UCS_OK) {
