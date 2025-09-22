@@ -40,7 +40,9 @@ enum {
     OP_TB_ARRIVE      = 20,  /* team members -> leader */
     OP_TB_RELEASE     = 21,   /* leader -> team members */
 
-    OP_DSM_ANN        = 30   /* DSM rkey announce (see dsm.c) */
+    OP_DSM_ANN        = 30,   /* DSM rkey announce (see dsm.c) */
+
+    OP_BARRIER        = 40   /* for runtime sync */
 };
 
 /* ---------- Message Structures ----------

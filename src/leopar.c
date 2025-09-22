@@ -17,6 +17,7 @@
 #include "ucx.h"
 #include "proto.h"
 #include "tid.h"
+#include "barrier.h"
 
 #include <ucp/api/ucp.h>
 #include <stdlib.h>
@@ -52,6 +53,8 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
         log_error("Failed to load cluster config: %s", config_path);
         return -1;
     }
+    
+    //tcp_barrier(&g_ctx.tcp_cfg, g_ctx.rank, g_ctx.world_size, /*stage*/0, /*tmo*/10000);
 
     log_info("LeoPar runtime starting: rank=%d size=%d ip=%s", g_ctx.rank, g_ctx.world_size, g_ctx.tcp_cfg.ip_of_rank[rank]);
     
@@ -62,11 +65,15 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
     }
     log_info("UCX context+worker initialized");
 
+    ucx_barrier(0, 10000);
+
     /* 4. Initialize local dispatcher for remote requests */
     if (dispatcher_start() != 0) {
         log_error("dispatcher_start failed");
         return -1;
     }
+
+    ucx_barrier(1, 10000);
 
     /* 5. Initialize local thread table */
     if (threadtable_init() != 0) {
@@ -82,6 +89,8 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
         log_error("DSM init failed"); 
         return -1; 
     }   
+
+    ucx_barrier(2, 10000);
 
     log_info("LeoPar runtime initialized successfully at rank %d", g_ctx.rank);
     return 0;
