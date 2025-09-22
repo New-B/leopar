@@ -170,6 +170,7 @@ int dsm_init(size_t local_pool_bytes)
         local_pool_bytes = 64ull << 20;
     }
 
+    log_debug("DSM: initializing with local pool size %zu bytes", local_pool_bytes);
     /* Allocate and register local arena */
     const size_t align = 4096;
     void *base = NULL;
@@ -177,7 +178,9 @@ int dsm_init(size_t local_pool_bytes)
         log_error("DSM: posix_memalign failed");
         return -1;
     }
-    memset(base, 0, local_pool_bytes);
+    log_debug("DSM: local arena %p..%p (%zu bytes) allocated by posix_memalign",
+              base, (void*)((uintptr_t)base + local_pool_bytes - 1), local_pool_bytes);
+    //memset(base, 0, local_pool_bytes);
     log_debug("DSM: local arena %p..%p (%zu bytes) allocated",
               base, (void*)((uintptr_t)base + local_pool_bytes - 1), local_pool_bytes);
 
