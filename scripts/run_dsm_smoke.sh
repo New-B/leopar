@@ -31,11 +31,13 @@ echo "Launching LeoPar across $WORLD_SIZE nodes..."
 
 HOST0=$(grep -i "^rank0" "$CONFIG" | cut -d'=' -f2 | tr -d ' ')
 LOGFILE="logs/leopar_rank0_${HOST0}_${TS}.log"
+LOGFILE_ERR="logs/error.log"
 
 echo "  -> Starting rank 0 locally"
 (
   cd "$ROOT" && mkdir -p logs && : > "$LOGFILE" && \
-  nohup "$BIN" "$CONFIG" 0 "$LOGFILE" >>"$LOGFILE" 2>&1 & 
+  #nohup "$BIN" "$CONFIG" 0 "$LOGFILE" >>"$LOGFILE" 2>&1 & 
+  nohup "$BIN" "$CONFIG" 0 "$LOGFILE" >>"$LOGFILE" 2> "$LOGFILE_ERR" &
 )
 
 for (( RANK=1; RANK<$WORLD_SIZE; RANK++ )); do
@@ -50,7 +52,7 @@ for (( RANK=1; RANK<$WORLD_SIZE; RANK++ )); do
   echo "  -> Starting rank $RANK on $HOST"
 
 ssh -n "$HOST" "cd $ROOT && mkdir -p logs && : > '$LOGFILE' && \
-  nohup $BIN '$CONFIG' $RANK '$LOGFILE' >>'$LOGFILE' 2>&1 & "\
+  nohup $BIN '$CONFIG' $RANK '$LOGFILE' >>'$LOGFILE' 2> "$LOGFILE_ERR" & "\
   || { echo "  !! SSH/launch failed on $HOST (rank $RANK)"; }
 done
 
