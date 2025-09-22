@@ -178,6 +178,8 @@ int dsm_init(size_t local_pool_bytes)
         return -1;
     }
     memset(base, 0, local_pool_bytes);
+    log_debug("DSM: local arena %p..%p (%zu bytes) allocated",
+              base, (void*)((uintptr_t)base + local_pool_bytes - 1), local_pool_bytes);
 
     ucp_mem_map_params_t mp; memset(&mp, 0, sizeof(mp));
     mp.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
