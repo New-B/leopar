@@ -509,6 +509,7 @@ int ucx_recv_blocking(uint32_t opcode, int from_rank,
  */
 int ucx_barrier(int root, int timeout_ms)
 {
+    log_debug("ucx_barrier: rank=%d enter barrier with root=%d", g_ctx.rank, root);
     const uint8_t tok = 0x42;
     const size_t  sz  = 1;
 
@@ -516,7 +517,7 @@ int ucx_barrier(int root, int timeout_ms)
 
     if (g_ctx.rank != root) {
         /* send token to root */
-        int rc = ucx_send_bytes(root, &tok, sz, TAG_MAKE(OP_BARRIER, (uint32_t)g_ctx.rank));
+        int rc = ucx_send_bytes(root, &tok, sz, OP_BARRIER);
         if (rc != 0) return rc;
 
         /* wait broadcast from root */
@@ -534,7 +535,7 @@ int ucx_barrier(int root, int timeout_ms)
         /* root: broadcast to all */
         for (int r = 0; r < g_ctx.world_size; ++r) {
             if (r == root) continue;
-            int rc = ucx_send_bytes(r, &tok, sz, TAG_MAKE(OP_BARRIER, (uint32_t)root));
+            int rc = ucx_send_bytes(r, &tok, sz, OP_BARRIER);
             if (rc != 0) return rc;
         }
         return 0;

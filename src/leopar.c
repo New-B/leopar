@@ -75,7 +75,7 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
         return -1; 
     }   
 
-    ucx_barrier(2, 10000);
+    ucx_barrier(1, 10000);
 
      /* 5. Initialize local thread table */
     if (threadtable_init() != 0) {
@@ -91,7 +91,7 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
         return -1;
     }
 
-    ucx_barrier(1, 10000);
+    ucx_barrier(0, 10000);
     
     log_info("LeoPar runtime initialized successfully at rank %d", g_ctx.rank);
     return 0;

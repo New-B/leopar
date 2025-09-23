@@ -444,13 +444,12 @@ int dsm_init(size_t arena_bytes)
     for (int r = 0; r < world_size; ++r) {
         if (r == my_rank) continue;
         /* header */
-        if (ucx_send_bytes(r, &hdr, sizeof(hdr), TAG_MAKE(OP_DSM_ANN, (uint32_t)my_rank)) != 0) {
+        if (ucx_send_bytes(r, &hdr, sizeof(hdr), OP_DSM_ANN) != 0) {
             log_error("DSM: send header to rank %d failed", r);
             goto fail;
         }
         /* rkey blob */
-        if (ucx_send_bytes(r, g_dsm.packed_rkey, g_dsm.packed_len,
-                           TAG_MAKE(OP_DSM_ANN, (uint32_t)my_rank)) != 0) {
+        if (ucx_send_bytes(r, g_dsm.packed_rkey, g_dsm.packed_len, OP_DSM_ANN) != 0) {
             log_error("DSM: send rkey to rank %d failed", r);
             goto fail;
         }
