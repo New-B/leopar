@@ -29,6 +29,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <pthread.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -88,6 +89,8 @@ int ucx_init(ucx_context_t *ucx, tcp_config_t *cfg, int rank)
     memset(&worker_params, 0, sizeof(worker_params));
     worker_params.field_mask = UCP_WORKER_PARAM_FIELD_THREAD_MODE;
     worker_params.thread_mode = UCS_THREAD_MODE_MULTI;  /* multithreaded runtime */
+
+    pthread_mutex_init(&ucx->worker_mtx, NULL);
 
     if (ucp_worker_create(ucx->ucp_context, &worker_params, &ucx->ucp_worker) != UCS_OK) {
         log_error("ucx_init: ucp_worker_create failed");
@@ -164,7 +167,9 @@ int ucx_finalize(ucx_context_t *ucx)
         for (int i = 0; i < ucx->world_size; ++i) {
             if (!ucx->eps[i]) continue;
             ucp_request_param_t p = {0};
+            UCX_LOCK();
             ucs_status_ptr_t fr = ucp_ep_flush_nbx(ucx->eps[i], &p);
+            UCX_UNLOCK();
             (void)ucx_wait_req(fr, "ep_flush_nbx");
             ucp_ep_destroy(ucx->eps[i]);
             ucx->eps[i] = NULL;
@@ -177,6 +182,8 @@ int ucx_finalize(ucx_context_t *ucx)
         ucp_worker_destroy(worker);
         ucx->ucp_worker = NULL;
     }
+    pthread_mutex_destroy(&ucx->worker_mtx);
+    
     if (ucx->ucp_context) {
         ucp_cleanup(ucx->ucp_context);
         ucx->ucp_context = NULL;
@@ -205,7 +212,9 @@ static int ucx_wait_req(ucs_status_ptr_t req, const char *what)
     /* Progress until completion */
     ucs_status_t st = UCS_INPROGRESS;
     while (st == UCS_INPROGRESS) {
+        UCX_LOCK();
         ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker);
+        UCX_UNLOCK();
         st = ucp_request_check_status(req);
         /* Optional: small sleep to reduce busy spin */
         if (st == UCS_INPROGRESS) usleep(100);
@@ -233,7 +242,9 @@ int ucx_send_bytes(int dest_rank, const void *buf, size_t len, int opcode)
 
     ucp_tag_t tag = make_tag(opcode, g_ctx.rank);
 
+    UCX_LOCK();
     ucs_status_ptr_t req = ucp_tag_send_nbx(g_ctx.ucx_ctx.eps[dest_rank], buf, len, tag, &prm);
+    UCX_UNLOCK();
     return ucx_wait_req(req, "tag_send_nbx");
     // if (UCS_PTR_IS_PTR(req)) {
     //     /* wait for completion */
@@ -264,11 +275,13 @@ void *ucx_recv_any_alloc(size_t *out_len, ucp_tag_t *out_tag, ucp_tag_recv_info_
     ucp_tag_recv_info_t info;
     ucp_tag_message_h msg;
 
-    for (;;) {
-        msg = ucp_tag_probe_nb(g_ctx.ucx_ctx.ucp_worker, 0, 0 /*mask*/, 1 /*remove*/, &info);
-        if (msg != NULL) break;
-        ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker);
-    }
+    // for (;;) {
+    UCX_LOCK();
+    msg = ucp_tag_probe_nb(g_ctx.ucx_ctx.ucp_worker, 0, 0 /*mask*/, 1 /*remove*/, &info);
+    UCX_UNLOCK();
+    if (msg != NULL) return NULL;
+    //     ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker);
+    // }
 
     size_t len = info.length;
 
@@ -281,7 +294,9 @@ void *ucx_recv_any_alloc(size_t *out_len, ucp_tag_t *out_tag, ucp_tag_recv_info_
     prm.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
     prm.datatype     = ucp_dt_make_contig(1);
 
+    UCX_LOCK();
     ucs_status_ptr_t rreq = ucp_tag_msg_recv_nbx(g_ctx.ucx_ctx.ucp_worker, buf, len, msg, &prm);
+    UCX_UNLOCK();
     if (ucx_wait_req(rreq, "tag_msg_recv_nbx")) {
         log_error("ucx_recv_any_alloc: recv failed");
         free(buf);
@@ -314,6 +329,49 @@ void *ucx_recv_any_alloc(size_t *out_len, ucp_tag_t *out_tag, ucp_tag_recv_info_
     return buf;
 }
 
+/* Receive exactly one message whose hi32(tag) == opcode.
+ * Thread-safe: uses the global worker mutex inside.
+ */
+void* ucx_recv_opcode_alloc(uint32_t opcode,
+                            size_t *out_len,
+                            ucp_tag_t *out_tag,
+                            ucp_tag_recv_info_t *out_info)
+{
+    ucp_worker_h w = g_ctx.ucx_ctx.ucp_worker;
+    const uint64_t TAG_MASK_OPCODE = 0xffffffff00000000ull;
+    const uint64_t TAG_MATCH       = ((uint64_t)opcode) << 32;
+
+    ucp_tag_recv_info_t info;
+
+    /* probe with opcode mask */
+    UCX_LOCK();
+    ucp_tag_message_h msg = ucp_tag_probe_nb(w, TAG_MATCH, TAG_MASK_OPCODE, 0, &info);
+    UCX_UNLOCK();
+    if (!msg) return NULL;
+
+    void *buf = malloc(info.length);
+    if (!buf) return NULL;
+
+    ucp_request_param_t p;
+    memset(&p, 0, sizeof(p));
+    p.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
+    p.datatype     = ucp_dt_make_contig(1);
+
+    UCX_LOCK();
+    ucs_status_ptr_t r = ucp_tag_msg_recv_nbx(w, buf, info.length, msg, &p);
+    UCX_UNLOCK();
+
+    if (ucx_wait_req(r, "tag_msg_recv_nbx(opcode)")) {
+        free(buf);
+        return NULL;
+    }
+    if (out_len)  *out_len  = info.length;
+    if (out_tag)  *out_tag  = info.sender_tag;  /* contains opcode|rank */
+    if (out_info) *out_info = info;
+    return buf;
+}
+
+
 /* Broadcast a small message to all ranks (except self).*/
 int ucx_broadcast_bytes(const void *buf, size_t len, int opcode)
 {
@@ -334,7 +392,9 @@ static void ucx_drain_unexpected(ucp_worker_h worker)
 {
     while (1) {
         ucp_tag_recv_info_t info;
+        UCX_LOCK();
         ucp_tag_message_h msg = ucp_tag_probe_nb(worker, 0, 0, 0, &info);
+        UCX_UNLOCK();
         if (!msg) break;
 
         void *tmp = malloc(info.length);
@@ -347,7 +407,9 @@ static void ucx_drain_unexpected(ucp_worker_h worker)
         memset(&p, 0, sizeof(p));
         p.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
         p.datatype     = ucp_dt_make_contig(1);
+        UCX_LOCK();
         ucs_status_ptr_t r = ucp_tag_msg_recv_nbx(worker, tmp, info.length, msg, &p);
+        UCX_UNLOCK();
         (void)ucx_wait_req(r, "drain recv");
         free(tmp);
     }
@@ -368,12 +430,16 @@ int ucx_put_block(const void *src, size_t len, int dst_rank,
     p.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
     p.datatype     = ucp_dt_make_contig(1);
 
+    UCX_LOCK();
     ucs_status_ptr_t r = ucp_put_nbx(ep, src, len, remote_addr, rkey, &p);
+    UCX_UNLOCK();
     if (ucx_wait_req(r, "put_nbx")) return -1;
 
     /* Ensure remote visibility (strong semantics for DSM write) */
     ucp_request_param_t pf; memset(&pf, 0, sizeof(pf));
+    UCX_LOCK();
     ucs_status_ptr_t fr = ucp_ep_flush_nbx(ep, &pf);
+    UCX_UNLOCK();
     if (ucx_wait_req(fr, "ep_flush_nbx")) return -1;
 
     return 0;
@@ -393,8 +459,10 @@ int ucx_get_block(void *dst, size_t len, int src_rank,
     p.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
     p.datatype     = ucp_dt_make_contig(1);
 
+    UCX_LOCK();
     ucs_status_ptr_t r = ucp_get_nbx(ep, dst, len, remote_addr, rkey, &p);
     if (ucx_wait_req(r, "get_nbx")) return -1;
+    UCX_UNLOCK();
 
     // /* Ensure local visibility (strong semantics for DSM read) */
     // ucp_request_param_t pf; memset(&pf, 0, sizeof(pf));

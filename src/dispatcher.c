@@ -4,9 +4,9 @@
  * @date 2025-09-16
  * @brief Implementation of message dispatcher & progress loop.
  *
- * The progress thread polls UCX worker for request opcodes (CREATE_REQ,
- * JOIN_REQ, EXIT_NOTIFY) and handles them. Response messages (CREATE_ACK,
- * JOIN_RESP) are not consumed here (they are awaited by API callers).
+ * This dispatcher only pulls *request-class* opcodes from UCX by calling
+ * ucx_recv_opcode_alloc(), which filters by opcode with a tag-mask. This avoids
+ * racing with API threads that await *response-class* messages.
  */
 
 #include "dispatcher.h"
@@ -40,6 +40,20 @@
 /* 后台线程控制 */
 static pthread_t       g_disp_thr;
 static atomic_int      g_disp_running = 0;
+
+/* ---- Request opcode list handled by the dispatcher ----
+ * Keep ONLY request-class opcodes here. Responses must be awaited by API code.
+ * Add DSM request opcodes if your DSM control plane uses message passing.
+ */
+static const uint32_t k_req_opcodes[] = {
+    OP_FUNC_ANNOUNCE,
+    OP_CREATE_REQ,
+    OP_JOIN_REQ,
+    OP_EXIT_NOTIFY,
+    OP_DSM_ANN,
+    /* DSM requests (add the ones you implemented): */
+    /* OP_DSM_ALLOC_REQ, OP_DSM_FREE_REQ, OP_DSM_LOCK_REQ, OP_DSM_UNLOCK_REQ, ... */
+};
 
 /* 为了简单演示，这里设置单条消息最大 64KB。
 * 若需要可更大，但请注意堆分配与协议中的最大负载约束。 */
@@ -195,20 +209,20 @@ void dispatch_msg(void *buf, size_t len, ucp_tag_t tag)
         case OP_FUNC_ANNOUNCE: handle_func_announce(buf, len, src_rank); break;
         case OP_CREATE_REQ: handle_create_req(buf, len, src_rank); break;
         case OP_JOIN_REQ:   handle_join_req(buf, len, src_rank);   break;
-        /* NEW: DSM announce */
-        case OP_DSM_ANN:       dsm_on_announce(buf,len,src_rank);      break;
-        case OP_DSM_ALLOC_REQ:  dsm_on_alloc_req(buf, len, src_rank);  break;
-        case OP_DSM_FREE_REQ:   dsm_on_free_req(buf, len, src_rank);   break;
-        case OP_DSM_LOCK_REQ:   dsm_on_lock_req(buf, len, src_rank);   break;
-        case OP_DSM_UNLOCK:     dsm_on_unlock(buf, len, src_rank);     break;
         /* RESP 类型（ALLOC_RESP / FREE_RESP / LOCK_RESP）由调用方等待，不在 dispatcher 消费 */
         case OP_EXIT_NOTIFY:
             /* 这里可补：更新元数据/回收资源/转发通知等 */
             log_info("EXIT_NOTIFY received (len=%zu) from rank=%u", len, src_rank);
             break;
+         /* NEW: DSM announce */
+        case OP_DSM_ANN:       dsm_on_announce(buf,len,src_rank);      break;
+        // case OP_DSM_ALLOC_REQ:  dsm_on_alloc_req(buf, len, src_rank);  break;
+        // case OP_DSM_FREE_REQ:   dsm_on_free_req(buf, len, src_rank);   break;
+        // case OP_DSM_LOCK_REQ:   dsm_on_lock_req(buf, len, src_rank);   break;
+        // case OP_DSM_UNLOCK:     dsm_on_unlock(buf, len, src_rank);     break;
         case OP_CREATE_ACK:
         case OP_JOIN_RESP:
-            /* 响应类消息由 API 的等待逻辑处理，这里不消费 */
+            /* Responce opcodes are interntionally NOT consumed here: */
             log_debug("Response opcode=%u from rank=%u ignored by dispatcher", opcode, src_rank);
             break;
         default:
@@ -217,85 +231,105 @@ void dispatch_msg(void *buf, size_t len, ucp_tag_t tag)
     }
 }
 
-/* Try to receive one message of a given request opcode.
-* Returns 1 if a message was received & dispatched, else 0.
-*/
-static int try_recv_request_opcode(int opcode)
-{
-    ucp_worker_h worker = g_ctx.ucx_ctx.ucp_worker;
+// /* Try to receive one message of a given request opcode.
+// * Returns 1 if a message was received & dispatched, else 0.
+// */
+// static int try_recv_request_opcode(int opcode)
+// {
+//     ucp_worker_h worker = g_ctx.ucx_ctx.ucp_worker;
 
-    ucp_tag_recv_info_t info;
-    ucp_tag_message_h msg =
-        ucp_tag_probe_nb(worker, TAG_MAKE(opcode, 0), TAG_MASK_OPCODE, /*remove=*/1, &info);
-    if (msg == NULL) return 0; /* no message */
+//     ucp_tag_recv_info_t info;
+//     ucp_tag_message_h msg =
+//         ucp_tag_probe_nb(worker, TAG_MAKE(opcode, 0), TAG_MASK_OPCODE, /*remove=*/1, &info);
+//     if (msg == NULL) return 0; /* no message */
 
-    size_t real_len = info.length;
-    if (real_len == 0) real_len = 1; /* UCX 不保证非零，至少给1字节 */
+//     size_t real_len = info.length;
+//     if (real_len == 0) real_len = 1; /* UCX 不保证非零，至少给1字节 */
 
-    /* 收取该消息（用固定缓冲区大小；如需更大消息，请扩展协议/分段） */
-    char *rbuf = (char*)malloc(real_len);
-    if (!rbuf) {
-        log_error("dispatcher: malloc %zu failed", real_len);
-        return 0;
-    }
+//     /* 收取该消息（用固定缓冲区大小；如需更大消息，请扩展协议/分段） */
+//     char *rbuf = (char*)malloc(real_len);
+//     if (!rbuf) {
+//         log_error("dispatcher: malloc %zu failed", real_len);
+//         return 0;
+//     }
 
-    ucp_request_param_t prm;
-    memset(&prm, 0, sizeof(prm));
-    prm.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
-    prm.datatype     = ucp_dt_make_contig(1);
+//     ucp_request_param_t prm;
+//     memset(&prm, 0, sizeof(prm));
+//     prm.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
+//     prm.datatype     = ucp_dt_make_contig(1);
 
-    ucs_status_ptr_t rreq = ucp_tag_msg_recv_nbx(worker, rbuf, real_len, msg, &prm);
-    if (UCS_PTR_IS_PTR(rreq)) {
-        /* 轮询直到完成 */
-        ucs_status_t st;
-        do {
-            ucp_worker_progress(worker);
-            st = ucp_request_check_status(rreq);
-        } while (st == UCS_INPROGRESS);
-        ucp_request_free(rreq);
-        if (st != UCS_OK) {
-            log_warn("dispatcher: recv completion status=%d", (int)st);
-            free(rbuf);
-            return 1; /* 已经拿走了消息，但失败，返回1避免死循环 */
-        }
-    } else {
-        ucs_status_t st = UCS_PTR_STATUS(rreq);
-        if (st != UCS_OK) {
-            log_warn("dispatcher: recv immediate status=%d", (int)st);
-            free(rbuf);
-            return 1;
-        }
-    }
+//     ucs_status_ptr_t rreq = ucp_tag_msg_recv_nbx(worker, rbuf, real_len, msg, &prm);
+//     if (UCS_PTR_IS_PTR(rreq)) {
+//         /* 轮询直到完成 */
+//         ucs_status_t st;
+//         do {
+//             ucp_worker_progress(worker);
+//             st = ucp_request_check_status(rreq);
+//         } while (st == UCS_INPROGRESS);
+//         ucp_request_free(rreq);
+//         if (st != UCS_OK) {
+//             log_warn("dispatcher: recv completion status=%d", (int)st);
+//             free(rbuf);
+//             return 1; /* 已经拿走了消息，但失败，返回1避免死循环 */
+//         }
+//     } else {
+//         ucs_status_t st = UCS_PTR_STATUS(rreq);
+//         if (st != UCS_OK) {
+//             log_warn("dispatcher: recv immediate status=%d", (int)st);
+//             free(rbuf);
+//             return 1;
+//         }
+//     }
 
-    dispatch_msg(rbuf, real_len, info.sender_tag);
+//     dispatch_msg(rbuf, real_len, info.sender_tag);
 
-    free(rbuf);
-    return 1;
-}
+//     free(rbuf);
+//     return 1;
+// }
 
 /* ----------- 对外：手动推进一次 ----------- */
 void dispatcher_progress_once(void)
 {
-    ucp_worker_h worker = g_ctx.ucx_ctx.ucp_worker;
-
-    /* 无条件先推进一次，驱动 wireup/收发完成 */
-    ucp_worker_progress(worker);
-
-    /* 只探测请求类 opcode，避免与 API 对响应竞争 */
-    static const int req_ops[] = { OP_FUNC_ANNOUNCE, OP_CREATE_REQ, OP_JOIN_REQ, OP_EXIT_NOTIFY, OP_JOIN_REQ, OP_JOIN_RESP, OP_DSM_ANN };
     int progressed = 0;
 
-    for (size_t i = 0; i < sizeof(req_ops)/sizeof(req_ops[0]); i++) {
-        progressed |= try_recv_request_opcode(req_ops[i]);
-        /* 每次处理后再推进一次，减少延迟 */
-        ucp_worker_progress(worker);
+    for (size_t i = 0; i < sizeof(k_req_opcodes)/sizeof(k_req_opcodes[0]); ++i) {
+        size_t len = 0; ucp_tag_t tag = 0; ucp_tag_recv_info_t info;
+        void *buf = ucx_recv_opcode_alloc(k_req_opcodes[i], &len, &tag, &info);
+        if (!buf) continue;
+
+        progressed = 1;
+        dispatch_msg(buf, len, tag);
+        free(buf);
+
+        /* 若怕饥饿，可处理 N 条后 break; 让出 CPU 一会儿 */
+        /* break; */
     }
 
-    /* 无事可做时小睡片刻，避免空转；有 UCX 事件fd时可改为 poll/epoll */
     if (!progressed) {
-        usleep(2000); /* 2ms */
-        ucp_worker_progress(worker);
+        /* 空转时稍微睡一会儿；如需事件驱动可改成 eventfd/poll 集成 */
+        usleep(2000);
     }
+
+    // ucp_worker_h worker = g_ctx.ucx_ctx.ucp_worker;
+
+    // /* 无条件先推进一次，驱动 wireup/收发完成 */
+    // ucp_worker_progress(worker);
+
+    // /* 只探测请求类 opcode，避免与 API 对响应竞争 */
+    // static const int req_ops[] = { OP_FUNC_ANNOUNCE, OP_CREATE_REQ, OP_JOIN_REQ, OP_EXIT_NOTIFY, OP_JOIN_REQ, OP_JOIN_RESP, OP_DSM_ANN };
+    // int progressed = 0;
+
+    // for (size_t i = 0; i < sizeof(req_ops)/sizeof(req_ops[0]); i++) {
+    //     progressed |= try_recv_request_opcode(req_ops[i]);
+    //     /* 每次处理后再推进一次，减少延迟 */
+    //     ucp_worker_progress(worker);
+    // }
+
+    // /* 无事可做时小睡片刻，避免空转；有 UCX 事件fd时可改为 poll/epoll */
+    // if (!progressed) {
+    //     usleep(2000); /* 2ms */
+    //     ucp_worker_progress(worker);
+    // }
 }
 
 /* ----------- 后台线程主体 ----------- */

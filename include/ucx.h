@@ -29,7 +29,12 @@ typedef struct {
     ucp_ep_h     *eps;         /* array of endpoints, one per rank */
     int           world_size;
     int           rank;
+    pthread_mutex_t worker_mtx;  /* NEW: serialize worker access */
 } ucx_context_t;
+
+#define UCX_LOCK()   pthread_mutex_lock(&g_ctx.ucx_ctx.worker_mtx)
+#define UCX_UNLOCK() pthread_mutex_unlock(&g_ctx.ucx_ctx.worker_mtx)
+
 
 typedef struct tcp_config_t tcp_config_t;   // forward declaration
 /**
@@ -70,7 +75,14 @@ int ucx_put_block(const void *src, size_t len, int dst_rank,
 int ucx_get_block(void *dst, size_t len, int src_rank,
     uint64_t remote_addr, ucp_rkey_h rkey);
 
-
+/* Receive a single message whose opcode matches `opcode` (hi32 of tag).
+ * Allocates exact-size buffer and returns it on success; returns NULL if none.
+ * Out params are filled with tag/info/len when non-NULL.
+ */
+ void* ucx_recv_opcode_alloc(uint32_t opcode,
+    size_t *out_len,
+    ucp_tag_t *out_tag,
+    ucp_tag_recv_info_t *out_info);
 
 /* Create UCX endpoints for all peers */
 int ucx_tcp_create_all_eps(ucp_context_h context,
