@@ -40,12 +40,6 @@
 static int ucx_wait_req(ucs_status_ptr_t req, const char *what);
 static void ucx_drain_unexpected(ucp_worker_h worker);
 
-/* Helpers for tag */
-static inline uint64_t TAG_MAKE(uint32_t op, uint32_t rank) {
-    return (((uint64_t)op) << 32) | (uint64_t)rank;
-}
-static const uint64_t TAG_MASK_FULL   = 0xffffffffffffffffull;
-static const uint64_t TAG_MASK_OPCODE = 0xffffffff00000000ull;
 
 /**
  * Initialize UCX context, worker, address exchange, and endpoints.
