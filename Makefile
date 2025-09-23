@@ -4,28 +4,31 @@
 # ===== Toolchain & UCX path =====
 CC        := gcc
 # Default UCX_HOME (can be overridden in `make UCX_HOME=/path/to/ucx`)
-UCX_HOME  := /usr/local/ucx-1.16.0
+UCX_HOME  ?= /usr/local/ucx-1.16.0
 
 # Try pkg-config first; fallback to UCX_HOME
-HAVE_PKG_UCX := $(shell pkg-config --exists ucx && echo yes || echo no)
+HAVE_PKG_UCX := $(shell PKG_CONFIG_PATH=$(UCX_HOME)/lib/pkgconfig:$(PKG_CONFIG_PATH) pkg-config --exists ucx && echo yes || echo no)
 
 ifeq ($(HAVE_PKG_UCX),yes)
-  UCX_CFLAGS := $(shell pkg-config --cflags ucx)
-  UCX_LIBS   := $(shell pkg-config --libs   ucx)   # typically: -L... -lucp -luct -lucs -lucm
+  UCX_CFLAGS := $(shell PKG_CONFIG_PATH=$(UCX_HOME)/lib/pkgconfig:$(PKG_CONFIG_PATH) pkg-config --cflags ucx)
+  UCX_LIBS   := $(shell PKG_CONFIG_PATH=$(UCX_HOME)/lib/pkgconfig:$(PKG_CONFIG_PATH) pkg-config --libs ucx)
+  UCX_LIBDIR := $(shell PKG_CONFIG_PATH=$(UCX_HOME)/lib/pkgconfig:$(PKG_CONFIG_PATH) pkg-config --variable=libdir ucx)
   INCDIRS    := -Iinclude $(UCX_CFLAGS)
   LIBDIRS    :=
   UCX_LINK   := $(UCX_LIBS)
 else
+  # Fallback without pkg-config
+  # Detect lib dir (lib vs lib64)
+  UCX_LIBDIR := $(shell if [ -d "$(UCX_HOME)/lib64" ]; then echo "$(UCX_HOME)/lib64"; else echo "$(UCX_HOME)/lib"; fi)
   INCDIRS    := -Iinclude -I$(UCX_HOME)/include
-  LIBDIRS    := -L$(UCX_HOME)/lib
-  # Fallback: explicitly list all ucx components (order matters)
+  LIBDIRS    := -L$(UCX_LIBDIR)
   UCX_LINK   := -lucp -luct -lucs -lucm
 endif
 
-CFLAGS    := -Wall -g -D_GNU_SOURCE $(INCDIRS)
+CFLAGS   := -Wall -g -D_GNU_SOURCE $(INCDIRS)
 # -rdynamic makes main binary symbols visible to dlsym()
 # --no-as-needed prevents linker from dropping transitive UCX libs
-LDFLAGS   := $(LIBDIRS) $(UCX_LINK) -ldl -lpthread -rdynamic -Wl,--no-as-needed
+LDFLAGS  := $(LIBDIRS) $(UCX_LINK) -ldl -lpthread -rdynamic -Wl,--no-as-needed -Wl,-rpath,$(UCX_LIBDIR)
 # If UCX is in a non-standard runtime path, uncomment one of:
 # LDFLAGS  += -Wl,-rpath,$(UCX_HOME)/lib
 # LDFLAGS  += $(shell pkg-config --variable=libdir ucx 2>/dev/null | sed 's#^#-Wl,-rpath,#')
@@ -111,9 +114,6 @@ clean:
 	rm -f $(LOG_DIR)/*
 
 .PHONY: all clean
-
-
-
 
 
 
