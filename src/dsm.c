@@ -557,9 +557,8 @@ void dsm_finalize(void)
     if (g_dsm.peer_rkey)  { free(g_dsm.peer_rkey);  g_dsm.peer_rkey  = NULL; }
     if (g_dsm.have_peer)  { free(g_dsm.have_peer);  g_dsm.have_peer  = NULL; }
 
-    //memset(&g_dsm, 0, sizeof(g_dsm));
-    /* 7) 复位一些标志字段（避免整结构 memset 覆盖已初始化的全局锁等） */
-    g_dsm.world_size = 0;
+    memset(&g_dsm, 0, sizeof(g_dsm));
+    log_info("DSM finalized for rank=%d", g_ctx.rank);
 }
 
 /* ---- Alloc/free ---- */

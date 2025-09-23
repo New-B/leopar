@@ -35,6 +35,9 @@
 #include <stdio.h>
 #include <inttypes.h>
 
+/*front declare*/
+static int ucx_wait_req(ucs_status_ptr_t req, const char *what);
+static void ucx_drain_unexpected(ucp_worker_h worker);
 
 /* Compose UCX tag: high 32 bits = opcode, low 32 bits = src_rank */
 static inline ucp_tag_t make_tag(int opcode, int src_rank)
