@@ -48,7 +48,8 @@ for (( RANK=1; RANK<$WORLD_SIZE; RANK++ )); do
     exit 4
   fi
 
-  LOGFILE="logs/leopar_rank${RANK}_${HOST}_${TS}.log"
+  #LOGFILE="logs/leopar_rank${RANK}_${HOST}_${TS}.log"
+  LOGFILE="logs/rank${RANK}_${TS}.log"
 
   echo "  -> Starting rank $RANK on $HOST"
 
