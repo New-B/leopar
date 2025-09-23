@@ -40,11 +40,12 @@
 static int ucx_wait_req(ucs_status_ptr_t req, const char *what);
 static void ucx_drain_unexpected(ucp_worker_h worker);
 
-/* Compose UCX tag: high 32 bits = opcode, low 32 bits = src_rank */
-static inline ucp_tag_t make_tag(int opcode, int src_rank)
-{
-    return (((uint64_t)(uint32_t)opcode) << 32) | (uint32_t)src_rank;
+/* Helpers for tag */
+static inline uint64_t TAG_MAKE(uint32_t op, uint32_t rank) {
+    return (((uint64_t)op) << 32) | (uint64_t)rank;
 }
+static const uint64_t TAG_MASK_FULL   = 0xffffffffffffffffull;
+static const uint64_t TAG_MASK_OPCODE = 0xffffffff00000000ull;
 
 /**
  * Initialize UCX context, worker, address exchange, and endpoints.
@@ -240,7 +241,7 @@ int ucx_send_bytes(int dest_rank, const void *buf, size_t len, int opcode)
     prm.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
     prm.datatype     = ucp_dt_make_contig(1);
 
-    ucp_tag_t tag = make_tag(opcode, g_ctx.rank);
+    ucp_tag_t tag = TAG_MAKE(opcode, g_ctx.rank);
 
     UCX_LOCK();
     ucs_status_ptr_t req = ucp_tag_send_nbx(g_ctx.ucx_ctx.eps[dest_rank], buf, len, tag, &prm);
@@ -472,6 +473,80 @@ int ucx_get_block(void *dst, size_t len, int src_rank,
     return 0;
 
 }
+
+/* Blocking recv: by opcode + (optional) exact src rank.
+ * Uses ucp_tag_recv_nbx (not probe) so it can match unexpected messages.
+ */
+int ucx_recv_blocking(uint32_t opcode, int from_rank,
+                      void *buf, size_t len, int timeout_ms)
+{
+    ucp_worker_h w = g_ctx.ucx_ctx.ucp_worker;
+
+    uint64_t tag, mask;
+    if (from_rank >= 0) {
+        tag  = TAG_MAKE(opcode, (uint32_t)from_rank);
+        mask = TAG_MASK_FULL;           /* exact match (opcode + rank) */
+    } else {
+        tag  = ((uint64_t)opcode) << 32;
+        mask = TAG_MASK_OPCODE;         /* match any rank, only opcode fixed */
+    }
+
+    ucp_request_param_t p;
+    memset(&p, 0, sizeof(p));
+    p.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
+    p.datatype     = ucp_dt_make_contig(1);
+
+    /* post recv */
+    UCX_LOCK();
+    ucs_status_ptr_t r = ucp_tag_recv_nbx(w, buf, len, tag, mask, &p);
+    UCX_UNLOCK();
+
+    /* wait with progress (internally locks worker) */
+    int rc = ucx_wait_req(r, "tag_recv_nbx(blocking)");
+    if (rc != 0) return rc;
+
+    /* 可选：超时控制可在外层循环封装，这里保持简洁。 */
+    return 0;
+}
+
+/* 2-phase barrier:
+ * phase 1: all non-root send 1B to root; root recv from all others.
+ * phase 2: root broadcast 1B to all; others recv from root.
+ */
+int ucx_barrier(int root, int timeout_ms)
+{
+    const uint8_t tok = 0x42;
+    const size_t  sz  = 1;
+
+    if (g_ctx.world_size == 1) return 0;
+
+    if (g_ctx.rank != root) {
+        /* send token to root */
+        int rc = ucx_send_bytes(root, &tok, sz, TAG_MAKE(OP_BARRIER, (uint32_t)g_ctx.rank));
+        if (rc != 0) return rc;
+
+        /* wait broadcast from root */
+        uint8_t ack = 0;
+        rc = ucx_recv_blocking(OP_BARRIER, root, &ack, sz, timeout_ms);
+        return rc;
+    } else {
+        /* root: gather from all */
+        for (int r = 0; r < g_ctx.world_size; ++r) {
+            if (r == root) continue;
+            uint8_t t = 0;
+            int rc = ucx_recv_blocking(OP_BARRIER, r, &t, sz, timeout_ms);
+            if (rc != 0) return rc;
+        }
+        /* root: broadcast to all */
+        for (int r = 0; r < g_ctx.world_size; ++r) {
+            if (r == root) continue;
+            int rc = ucx_send_bytes(r, &tok, sz, TAG_MAKE(OP_BARRIER, (uint32_t)root));
+            if (rc != 0) return rc;
+        }
+        return 0;
+    }
+}
+
 /* ------------------------- create UCX endpoints ------------------------- */
 
 int ucx_tcp_create_all_eps(ucp_context_h context,

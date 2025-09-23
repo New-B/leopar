@@ -17,7 +17,7 @@
 #include "ucx.h"
 #include "proto.h"
 #include "tid.h"
-#include "barrier.h"
+// #include "barrier.h"
 
 #include <ucp/api/ucp.h>
 #include <stdlib.h>

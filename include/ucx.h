@@ -84,6 +84,19 @@ int ucx_get_block(void *dst, size_t len, int src_rank,
     ucp_tag_t *out_tag,
     ucp_tag_recv_info_t *out_info);
 
+/* Blocking recv by (opcode, from_rank):
+ * If from_rank<0 -> wildcard any rank
+ * Guarantees progress internally (locks worker & waits).
+ * Returns 0 on success.
+ */
+int ucx_recv_blocking(uint32_t opcode, int from_rank,
+    void *buf, size_t len, int timeout_ms);
+
+/* Simple 2-phase barrier (gather to root, then broadcast).
+* Returns 0 on success.
+*/
+int ucx_barrier(int root, int timeout_ms);
+
 /* Create UCX endpoints for all peers */
 int ucx_tcp_create_all_eps(ucp_context_h context,
                         ucp_worker_h worker,
