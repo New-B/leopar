@@ -30,7 +30,8 @@ TS=$(date +%Y%m%d_%H%M%S)
 echo "Launching LeoPar across $WORLD_SIZE nodes..."
 
 HOST0=$(grep -i "^rank0" "$CONFIG" | cut -d'=' -f2 | tr -d ' ')
-LOGFILE="logs/leopar_rank0_${HOST0}_${TS}.log"
+#LOGFILE="logs/leopar_rank0_${HOST0}_${TS}.log"
+LOGFILE="logs/rank0_${TS}.log"
 LOGFILE_ERR="logs/error.log"
 
 echo "  -> Starting rank 0 locally"
@@ -41,7 +42,7 @@ echo "  -> Starting rank 0 locally"
 )
 
 for (( RANK=1; RANK<$WORLD_SIZE; RANK++ )); do
-  HOST=$(grep -i "^rank$RANK" "$CONFIG" | cut -d'=' -f2 | tr -d ' ') # get the IP address of each rank
+  HOST=$(grep -i "^rank$RANK=" "$CONFIG" | cut -d'=' -f2 | tr -d ' ') # get the IP address of each rank
   if [ -z "$HOST" ]; then
     echo "Error: IP for rank $RANK not found in $CONFIG"
     exit 4
