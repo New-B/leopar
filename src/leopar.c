@@ -67,22 +67,7 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
 
     ucx_barrier(0, 10000);
 
-    /* 4. Initialize local dispatcher for remote requests */
-    if (dispatcher_start() != 0) {
-        log_error("dispatcher_start failed");
-        return -1;
-    }
-
-    ucx_barrier(1, 10000);
-
-    /* 5. Initialize local thread table */
-    if (threadtable_init() != 0) {
-        log_error("Thread table init failed for rank=%d", g_ctx.rank);
-        return -1;
-    }
-    log_info("Thread table initialized (capacity=%d)", MAX_LOCAL_THREADS);
-
-    /* 6. Initialize DSM (local arena + rkey exchange) */
+    /* 4. Initialize DSM (local arena + rkey exchange) */
     size_t pool_bytes = (g_ctx.dsm_pool_mb > 0 ? (size_t)g_ctx.dsm_pool_mb << 20 : (64ull<<20));
     log_debug("Initializing DSM with local pool size %zu MB", g_ctx.dsm_pool_mb);
     if (dsm_init(pool_bytes) != 0) { 
@@ -92,6 +77,22 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
 
     ucx_barrier(2, 10000);
 
+     /* 5. Initialize local thread table */
+    if (threadtable_init() != 0) {
+        log_error("Thread table init failed for rank=%d", g_ctx.rank);
+        return -1;
+    }
+    log_info("Thread table initialized (capacity=%d)", MAX_LOCAL_THREADS);
+
+
+    /* 6. Initialize local dispatcher for remote requests */
+    if (dispatcher_start() != 0) {
+        log_error("dispatcher_start failed");
+        return -1;
+    }
+
+    ucx_barrier(1, 10000);
+    
     log_info("LeoPar runtime initialized successfully at rank %d", g_ctx.rank);
     return 0;
 }
