@@ -12,8 +12,8 @@
  *   - Create UCX endpoints for all peers
  */
 
-#ifndef UCX_TCP_H
-#define UCX_TCP_H
+#ifndef LEO_UCX_H
+#define LEO_UCX_H
 
 #include <stddef.h>
 #include <ucp/api/ucp.h>
@@ -64,7 +64,7 @@ int ucx_broadcast_bytes(const void *buf, size_t len, int opcode);
  * remote_addr must be the peer's base + offset (UCS_PTR_BYTE_OFFSET style).
  * rkey is the peer's unpacked rkey for its arena.
  */
- int ucx_put_block(const void *src, size_t len, int dst_rank,
+int ucx_put_block(const void *src, size_t len, int dst_rank,
     uint64_t remote_addr, ucp_rkey_h rkey);
 
 int ucx_get_block(void *dst, size_t len, int src_rank,
@@ -84,5 +84,5 @@ int ucx_tcp_create_all_eps(ucp_context_h context,
 }
 #endif
 
-#endif /* UCX_TCP_H */
+#endif /* LEO_UCX_H */
  

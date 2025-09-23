@@ -151,25 +151,29 @@ int ucx_finalize(ucx_context_t *ucx)
 {
     if (!ucx) return 0;
 
-    /* 1. Destroy endpoints */
+    ucp_worker_h  worker = ucx->ucp_worker;
+
+    /* 1) drain unexpected messages to avoid tag_match warnings */
+    if (worker) ucx_drain_unexpected(worker);
+
+    /* 2) flush & destroy endpoints */
     if (ucx->eps) {
-        for (int i = 0; i < ucx->world_size; i++) {
-            if (ucx->eps[i]) {
-                ucp_ep_destroy(ucx->eps[i]);
-                ucx->eps[i] = NULL;
-            }
+        for (int i = 0; i < ucx->world_size; ++i) {
+            if (!ucx->eps[i]) continue;
+            ucp_request_param_t p = {0};
+            ucs_status_ptr_t fr = ucp_ep_flush_nbx(ucx->eps[i], &p);
+            (void)ucx_wait_req(fr, "ep_flush_nbx");
+            ucp_ep_destroy(ucx->eps[i]);
+            ucx->eps[i] = NULL;
         }
-        free(ucx->eps);
-        ucx->eps = NULL;
+        free(ucx->eps); ucx->eps = NULL;
     }
 
-    /* 2. Destroy worker */
-    if (ucx->ucp_worker) {
-        ucp_worker_destroy(ucx->ucp_worker);
+    /* 3) destroy worker then context */
+    if (worker) {
+        ucp_worker_destroy(worker);
         ucx->ucp_worker = NULL;
     }
-
-    /* 3. Cleanup UCX context */
     if (ucx->ucp_context) {
         ucp_cleanup(ucx->ucp_context);
         ucx->ucp_context = NULL;
@@ -183,109 +187,6 @@ int ucx_finalize(ucx_context_t *ucx)
 
 static inline ucp_worker_h W(void) { return g_ctx.ucx_ctx.ucp_worker; }
 static inline ucp_ep_h     EP(int r){ return g_ctx.ucx_ctx.eps ? g_ctx.ucx_ctx.eps[r] : NULL; }
-
-/* Send a contiguous byte buffer to dest_rank with (hi32=opcode, lo32=src).
-* Returns 0 on success, nonzero on error. */
-int ucx_send_bytes(int dest_rank, const void *buf, size_t len, int opcode)
-{
-    if (dest_rank < 0 || dest_rank >= g_ctx.world_size) return -1;
-    if (!g_ctx.ucx_ctx.eps || !g_ctx.ucx_ctx.eps[dest_rank]) return -1;
-
-    ucp_request_param_t prm;
-    memset(&prm, 0, sizeof(prm));
-    prm.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
-    prm.datatype     = ucp_dt_make_contig(1);
-
-    ucp_tag_t tag = make_tag(opcode, g_ctx.rank);
-
-    ucs_status_ptr_t req = ucp_tag_send_nbx(g_ctx.ucx_ctx.eps[dest_rank], buf, len, tag, &prm);
-    if (UCS_PTR_IS_PTR(req)) {
-        /* wait for completion */
-        ucs_status_t st;
-        do {
-            ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker);
-            st = ucp_request_check_status(req);
-        } while (st == UCS_INPROGRESS);
-        ucp_request_free(req);
-        if (st != UCS_OK) {
-            log_warn("ucx_send_bytes completion status=%d", (int)st);
-            return -1;
-        }
-    } else {
-        ucs_status_t st = UCS_PTR_STATUS(req);
-        if (st != UCS_OK) {
-            log_warn("ucx_send_bytes immediate status=%d", (int)st);
-            return -1;
-        }
-    }
-    return 0;
-}
-
-void *ucx_recv_any_alloc(size_t *out_len, ucp_tag_t *out_tag, ucp_tag_recv_info_t *out_info)
-{
-    /* Probe any message: tag=0, mask=0 matches everything */
-    ucp_tag_recv_info_t info;
-    ucp_tag_message_h msg;
-
-    for (;;) {
-        msg = ucp_tag_probe_nb(g_ctx.ucx_ctx.ucp_worker, 0, 0 /*mask*/, 1 /*remove*/, &info);
-        if (msg != NULL) break;
-        ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker);
-    }
-
-    size_t len = info.length;
-
-    /* allocate exact-size buffer */
-    void *buf = malloc(len > 0 ? len : 1);
-    if (!buf) return NULL;
-
-    ucp_request_param_t prm;
-    memset(&prm, 0, sizeof(prm));
-    prm.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
-    prm.datatype     = ucp_dt_make_contig(1);
-
-    ucs_status_ptr_t rreq = ucp_tag_msg_recv_nbx(g_ctx.ucx_ctx.ucp_worker, buf, len, msg, &prm);
-    if (UCS_PTR_IS_PTR(rreq)) {
-        ucs_status_t st;
-        do {
-            ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker);
-            st = ucp_request_check_status(rreq);
-        } while (st == UCS_INPROGRESS);
-        ucp_request_free(rreq);
-        if (st != UCS_OK) {
-            log_warn("ucx_recv_any_alloc completion status=%d", (int)st);
-            free(buf);
-            return NULL;
-        }
-    } else {
-        ucs_status_t st = UCS_PTR_STATUS(rreq);
-        if (st != UCS_OK) {
-            log_warn("ucx_recv_any_alloc immediate status=%d", (int)st);
-            free(buf);
-            return NULL;
-        }
-    }
-
-    if (out_len) *out_len = len;
-    if (out_tag) *out_tag = info.sender_tag;
-    if (out_info) *out_info = info;
-    return buf;
-}
-
-/* Broadcast a small message to all ranks (except self).*/
-int ucx_broadcast_bytes(const void *buf, size_t len, int opcode)
-{
-    int rc = 0;
-    for (int r = 0; r < g_ctx.world_size; r++) {
-        if (r == g_ctx.rank) continue;
-        if (ucx_send_bytes(r, buf, len, opcode) != 0 && rc == 0){
-            log_warn("ucx_broadcast_bytes: send failed to rank=%d", r);
-            rc = -1; break;
-        }
-    }
-    log_debug("func name broadcast: broadcast complete (opcode=%d len=%zu)", opcode, len);
-    return rc;
-}
 
 /* Wait for a UCX nbx request to complete. Return 0 on success, -1 on error. */
 static int ucx_wait_req(ucs_status_ptr_t req, const char *what)
@@ -315,6 +216,140 @@ static int ucx_wait_req(ucs_status_ptr_t req, const char *what)
     return 0;
 }
 
+/* Send a contiguous byte buffer to dest_rank with (hi32=opcode, lo32=src).
+* Returns 0 on success, nonzero on error. */
+int ucx_send_bytes(int dest_rank, const void *buf, size_t len, int opcode)
+{
+    if (dest_rank < 0 || dest_rank >= g_ctx.world_size) return -1;
+    if (!g_ctx.ucx_ctx.eps || !g_ctx.ucx_ctx.eps[dest_rank]) return -1;
+
+    ucp_request_param_t prm;
+    memset(&prm, 0, sizeof(prm));
+    prm.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
+    prm.datatype     = ucp_dt_make_contig(1);
+
+    ucp_tag_t tag = make_tag(opcode, g_ctx.rank);
+
+    ucs_status_ptr_t req = ucp_tag_send_nbx(g_ctx.ucx_ctx.eps[dest_rank], buf, len, tag, &prm);
+    return ucx_wait_req(req, "tag_send_nbx");
+    // if (UCS_PTR_IS_PTR(req)) {
+    //     /* wait for completion */
+    //     ucs_status_t st;
+    //     do {
+    //         ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker);
+    //         st = ucp_request_check_status(req);
+    //     } while (st == UCS_INPROGRESS);
+    //     ucp_request_free(req);
+    //     if (st != UCS_OK) {
+    //         log_warn("ucx_send_bytes completion status=%d", (int)st);
+    //         return -1;
+    //     }
+    // } else {
+    //     ucs_status_t st = UCS_PTR_STATUS(req);
+    //     if (st != UCS_OK) {
+    //         log_warn("ucx_send_bytes immediate status=%d", (int)st);
+    //         return -1;
+    //     }
+    // }
+    // return 0;
+}
+
+/* Probe any message, allocate exact-size buffer, receive it, return pointer */
+void *ucx_recv_any_alloc(size_t *out_len, ucp_tag_t *out_tag, ucp_tag_recv_info_t *out_info)
+{
+    /* Probe any message: tag=0, mask=0 matches everything */
+    ucp_tag_recv_info_t info;
+    ucp_tag_message_h msg;
+
+    for (;;) {
+        msg = ucp_tag_probe_nb(g_ctx.ucx_ctx.ucp_worker, 0, 0 /*mask*/, 1 /*remove*/, &info);
+        if (msg != NULL) break;
+        ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker);
+    }
+
+    size_t len = info.length;
+
+    /* allocate exact-size buffer */
+    void *buf = malloc(len > 0 ? len : 1);
+    if (!buf) return NULL;
+
+    ucp_request_param_t prm;
+    memset(&prm, 0, sizeof(prm));
+    prm.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
+    prm.datatype     = ucp_dt_make_contig(1);
+
+    ucs_status_ptr_t rreq = ucp_tag_msg_recv_nbx(g_ctx.ucx_ctx.ucp_worker, buf, len, msg, &prm);
+    if (ucx_wait_req(rreq, "tag_msg_recv_nbx")) {
+        log_error("ucx_recv_any_alloc: recv failed");
+        free(buf);
+        return NULL;
+    }
+    // if (UCS_PTR_IS_PTR(rreq)) {
+    //     ucs_status_t st;
+    //     do {
+    //         ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker);
+    //         st = ucp_request_check_status(rreq);
+    //     } while (st == UCS_INPROGRESS);
+    //     ucp_request_free(rreq);
+    //     if (st != UCS_OK) {
+    //         log_warn("ucx_recv_any_alloc completion status=%d", (int)st);
+    //         free(buf);
+    //         return NULL;
+    //     }
+    // } else {
+    //     ucs_status_t st = UCS_PTR_STATUS(rreq);
+    //     if (st != UCS_OK) {
+    //         log_warn("ucx_recv_any_alloc immediate status=%d", (int)st);
+    //         free(buf);
+    //         return NULL;
+    //     }
+    // }
+
+    if (out_len) *out_len = len;
+    if (out_tag) *out_tag = info.sender_tag;
+    if (out_info) *out_info = info;
+    return buf;
+}
+
+/* Broadcast a small message to all ranks (except self).*/
+int ucx_broadcast_bytes(const void *buf, size_t len, int opcode)
+{
+    int rc = 0;
+    for (int r = 0; r < g_ctx.world_size; r++) {
+        if (r == g_ctx.rank) continue;
+        if (ucx_send_bytes(r, buf, len, opcode) != 0 && rc == 0){
+            log_warn("ucx_broadcast_bytes: send failed to rank=%d", r);
+            rc = -1; break;
+        }
+    }
+    log_debug("func name broadcast: broadcast complete (opcode=%d len=%zu)", opcode, len);
+    return rc;
+}
+
+/* Drain all unexpected tag messages to avoid UCX WARN on finalize */
+static void ucx_drain_unexpected(ucp_worker_h worker)
+{
+    while (1) {
+        ucp_tag_recv_info_t info;
+        ucp_tag_message_h msg = ucp_tag_probe_nb(worker, 0, 0, 0, &info);
+        if (!msg) break;
+
+        void *tmp = malloc(info.length);
+        if (!tmp) {
+            log_warn("UCX drain: malloc(%zu) failed; progressing anyway", (size_t)info.length);
+            ucp_worker_progress(worker);
+            continue;
+        }
+        ucp_request_param_t p;
+        memset(&p, 0, sizeof(p));
+        p.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
+        p.datatype     = ucp_dt_make_contig(1);
+        ucs_status_ptr_t r = ucp_tag_msg_recv_nbx(worker, tmp, info.length, msg, &p);
+        (void)ucx_wait_req(r, "drain recv");
+        free(tmp);
+    }
+}
+
 int ucx_put_block(const void *src, size_t len, int dst_rank,
                   uint64_t remote_addr, ucp_rkey_h rkey)
 {
@@ -336,7 +371,7 @@ int ucx_put_block(const void *src, size_t len, int dst_rank,
     /* Ensure remote visibility (strong semantics for DSM write) */
     ucp_request_param_t pf; memset(&pf, 0, sizeof(pf));
     ucs_status_ptr_t fr = ucp_ep_flush_nbx(ep, &pf);
-    if (ucx_wait_req(fr, "ep_flush")) return -1;
+    if (ucx_wait_req(fr, "ep_flush_nbx")) return -1;
 
     return 0;
 }

@@ -276,12 +276,11 @@ void dsm_on_unlock(const void *buf, size_t len, uint32_t src_rank)
     pthread_rwlock_unlock(&g_dir[idx].rwlock);
 }
 
-/* Assuming you already have:
- * - dsm_dir_find_idx(leo_gaddr_t g) -> int
- * - a directory array g_dir[idx] with fields { in_use, gaddr, size, rwlock }
- * - a mutex g_dir_mtx guarding directory updates
+/* Assumed existing globals:
+ *  - g_dsm.memh (ucp_mem_h), g_dsm.peer_rkey[], g_dsm.peer_base[]
+ *  - directory g_dir[], guarded by g_dir_mtx, with fields: in_use, gaddr, size, rwlock
+ *  - helpers: dsm_dir_find_idx(leo_gaddr_t), etc.
  */
-
  void dsm_on_free_req(const void *buf, size_t len, uint32_t src_rank)
  {
      if (len < sizeof(msg_dsm_free_req_t)) {
@@ -513,24 +512,54 @@ void dsm_finalize(void)
     /* Destroy peer rkeys */
     if (g_dsm.peer_rkey) {
         for (int r = 0; r < g_ctx.world_size; ++r) {
-            if (g_dsm.peer_rkey[r]) ucp_rkey_destroy(g_dsm.peer_rkey[r]);
+            if (g_dsm.peer_rkey[r]) {
+                ucp_rkey_destroy(g_dsm.peer_rkey[r]);
+                g_dsm.peer_rkey[r] = NULL;
+            }
         }
     }
-    /* Release packed rkey buffer */
-    if (g_dsm.packed_rkey) ucp_rkey_buffer_release(g_dsm.packed_rkey);
 
-    /* Unmap local mem */
-    if (g_dsm.memh) ucp_mem_unmap(g_ctx.ucx_ctx.ucp_context, g_dsm.memh);
+    /* 2) Release my packed rkey buffer (pack side), if you kept it */
+    if (g_dsm.packed_rkey) {
+        ucp_rkey_buffer_release(g_dsm.packed_rkey);
+        g_dsm.packed_rkey = NULL;
+    }
 
-    /* Free arena */
-    if (g_dsm.arena_base) free(g_dsm.arena_base);
+    /* 3) Unmap my registered arena before freeing the raw memory */
+    if (g_dsm.memh) {
+        ucs_status_t st = ucp_mem_unmap(g_ctx.ucx_ctx.ucp_context, g_dsm.memh);
+        if (st != UCS_OK) {
+            log_warn("DSM: ucp_mem_unmap failed: %s", ucs_status_string(st));
+        }
+        g_dsm.memh = NULL;
+    }
 
-    /* Free arrays */
-    free(g_dsm.peer_base);
-    free(g_dsm.peer_rkey);
-    free(g_dsm.have_peer);
+    /* 4) Free the arena host memory */
+    if (g_dsm.arena_base) {
+        free(g_dsm.arena_base);
+        g_dsm.arena_base = NULL;
+        g_dsm.arena_bytes = 0;
+        g_dsm.bump = 0;
+    }
 
-    memset(&g_dsm, 0, sizeof(g_dsm));
+    /* 5) Optional: clear directory and destroy per-entry locks */
+    pthread_mutex_lock(&g_dir_mtx);
+    for (int i = 0; i < DSM_DIR_MAX; ++i) {
+        if (g_dir[i].in_use) {
+            pthread_rwlock_destroy(&g_dir[i].rwlock);
+            g_dir[i].in_use = 0;
+        }
+    }
+    pthread_mutex_unlock(&g_dir_mtx);
+
+    /* 6) 释放跨节点元数据数组（仅当是动态分配时） */
+    if (g_dsm.peer_base)  { free(g_dsm.peer_base);  g_dsm.peer_base  = NULL; }
+    if (g_dsm.peer_rkey)  { free(g_dsm.peer_rkey);  g_dsm.peer_rkey  = NULL; }
+    if (g_dsm.have_peer)  { free(g_dsm.have_peer);  g_dsm.have_peer  = NULL; }
+
+    //memset(&g_dsm, 0, sizeof(g_dsm));
+    /* 7) 复位一些标志字段（避免整结构 memset 覆盖已初始化的全局锁等） */
+    g_dsm.world_size = 0;
 }
 
 /* ---- Alloc/free ---- */
