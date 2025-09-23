@@ -136,6 +136,17 @@ typedef struct {
     uint64_t team_id;       /* deterministic team id */
 } msg_tb_release_t;
 
+/* DSM announce: send twice per peer:
+ *   1) header: base_addr + rkey_len (+ optional arena_bytes)
+ *   2) raw bytes: packed rkey buffer of length rkey_len
+ */
+typedef struct {
+    uint32_t opcode;       /* OP_DSM_ANN */
+    uint32_t rkey_len;     /* bytes of packed rkey */
+    uint64_t base_addr;    /* local arena base address (remote will RMA to here) */
+    uint64_t arena_bytes;  /* optional: expose arena size for sanity */
+} msg_dsm_announce_t;
+
 /* Remote alloc request -> sent to owner */
 typedef struct {
     uint32_t opcode;       /* OP_DSM_ALLOC_REQ */

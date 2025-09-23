@@ -32,6 +32,13 @@ typedef struct {
     pthread_mutex_t worker_mtx;  /* NEW: serialize worker access */
 } ucx_context_t;
 
+/* Helpers for tag */
+static inline uint64_t TAG_MAKE(uint32_t op, uint32_t rank) {
+    return (((uint64_t)op) << 32) | (uint64_t)rank;
+}
+static const uint64_t TAG_MASK_FULL   = 0xffffffffffffffffull;
+static const uint64_t TAG_MASK_OPCODE = 0xffffffff00000000ull;
+
 #define UCX_LOCK()   pthread_mutex_lock(&g_ctx.ucx_ctx.worker_mtx)
 #define UCX_UNLOCK() pthread_mutex_unlock(&g_ctx.ucx_ctx.worker_mtx)
 
