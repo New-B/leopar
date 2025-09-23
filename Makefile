@@ -4,7 +4,7 @@
 # ===== Toolchain & UCX path =====
 CC        := gcc
 # Default UCX_HOME (can be overridden in `make UCX_HOME=/path/to/ucx`)
-UCX_HOME  := /usr
+UCX_HOME  := /usr/local/ucx-1.16.0
 
 # Try pkg-config first; fallback to UCX_HOME
 HAVE_PKG_UCX := $(shell pkg-config --exists ucx && echo yes || echo no)
