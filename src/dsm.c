@@ -120,7 +120,7 @@ void dsm_on_announce(const void *buf, size_t len, uint32_t src_rank)
     pthread_cond_broadcast(&g_ann_cv);
     pthread_mutex_unlock(&g_ann_mtx);
 
-    log_info("DSM: got rkey from rank %u base=0x%llx len=%u",
+    log_info("DSM: got rkey from rank %u base=0x%llx len=%u\n",
              src_rank, (unsigned long long)mh->base_addr, mh->rkey_len);
 }
 
@@ -146,20 +146,213 @@ int dsm_wait_announces(int timeout_ms)
     }
 }
 
-/* ---- Helpers: UCX request wait ---- */
-static int ucx_wait(ucs_status_ptr_t req)
+// /* ---- Helpers: UCX request wait ---- */
+// static int ucx_wait(ucs_status_ptr_t req)
+// {
+//     if (req == NULL) return 0;
+//     if (UCS_PTR_IS_ERR(req)) return UCS_PTR_STATUS(req) == UCS_OK ? 0 : -1;
+//     while (1) {
+//         ucs_status_t st = ucp_request_check_status(req);
+//         if (st == UCS_OK) break;
+//         if (st != UCS_INPROGRESS) { ucp_request_free(req); return -1; }
+//         ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker);
+//     }
+//     ucp_request_free(req);
+//     return 0;
+// }
+
+/* dsm.c: a very small directory */
+typedef struct {
+    leo_gaddr_t gaddr;
+    size_t      size;
+    int         in_use;
+    /* owner-side lock bookkeeping */
+    pthread_rwlock_t rwlock;  /* for local owner fast-path */
+    /* optional: wait queues / counters, simplified here */
+} dsm_dir_entry_t;
+
+#define DSM_DIR_MAX 65536
+static dsm_dir_entry_t g_dir[DSM_DIR_MAX];
+static pthread_mutex_t g_dir_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+static int dsm_dir_find_idx(leo_gaddr_t g)
 {
-    if (req == NULL) return 0;
-    if (UCS_PTR_IS_ERR(req)) return UCS_PTR_STATUS(req) == UCS_OK ? 0 : -1;
-    while (1) {
-        ucs_status_t st = ucp_request_check_status(req);
-        if (st == UCS_OK) break;
-        if (st != UCS_INPROGRESS) { ucp_request_free(req); return -1; }
-        ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker);
-    }
-    ucp_request_free(req);
-    return 0;
+    /* trivial O(N) for MVP; later use hashmap */
+    for (int i=0;i<DSM_DIR_MAX;i++) if (g_dir[i].in_use && g_dir[i].gaddr==g) return i;
+    return -1;
 }
+static int dsm_dir_insert(leo_gaddr_t g, size_t sz)
+{
+    for (int i=0;i<DSM_DIR_MAX;i++) if (!g_dir[i].in_use) {
+        g_dir[i].gaddr=g; g_dir[i].size=sz; g_dir[i].in_use=1;
+        pthread_rwlock_init(&g_dir[i].rwlock,NULL);
+        return 0;
+    }
+    return -1;
+}
+
+/* Internal: perform remote allocation by RPC */
+static int dsm_remote_alloc(int owner, size_t n, leo_gaddr_t *out)
+{
+    msg_dsm_alloc_req_t req = { .opcode = OP_DSM_ALLOC_REQ, .size_bytes = n };
+    if (ucx_send_bytes(owner, &req, sizeof(req), OP_DSM_ALLOC_REQ) != 0)
+        return -1;
+
+    while (1) {
+        size_t len=0; ucp_tag_t tag=0; ucp_tag_recv_info_t info;
+        void *buf = ucx_recv_any_alloc(&len, &tag, &info);
+        if (!buf) { ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker); usleep(1000); continue; }
+        uint32_t op = (uint32_t)(tag >> 32);
+        uint32_t src= (uint32_t)(tag & 0xffffffffu);
+
+        if (op == OP_DSM_ALLOC_RESP && src == (uint32_t)owner && len >= sizeof(msg_dsm_alloc_resp_t)) {
+            msg_dsm_alloc_resp_t *r = (msg_dsm_alloc_resp_t*)buf;
+            int rc = r->status;
+            if (rc == 0) *out = (leo_gaddr_t)r->gaddr;
+            free(buf);
+            return rc;
+        }
+        /* Dispatch other control-plane messages to keep runtime making progress */
+        dispatch_msg(buf, len, tag);
+        free(buf);
+    }
+}
+
+/* Dispatcher handler: owner side alloc */
+void dsm_on_alloc_req(const void *buf, size_t len, uint32_t src_rank)
+{
+    if (len < sizeof(msg_dsm_alloc_req_t)) return;
+    const msg_dsm_alloc_req_t *rq = (const msg_dsm_alloc_req_t*)buf;
+
+    /* local bump allocator on owner */
+    size_t off = 0;  /* obtain offset from your allocator */
+    int    ok  = 0;
+    pthread_mutex_lock(&g_dsm.alloc_mtx);
+    if (g_dsm.bump + rq->size_bytes <= g_dsm.arena_bytes) {
+        off = g_dsm.bump;
+        g_dsm.bump += rq->size_bytes;
+        ok = 1;
+        /* record metadata for lock mgmt: see 5.3 */
+        dsm_dir_insert(LEO_GADDR_MAKE(g_ctx.rank, off), rq->size_bytes);
+    }
+    pthread_mutex_unlock(&g_dsm.alloc_mtx);
+
+    msg_dsm_alloc_resp_t resp = {
+        .opcode = OP_DSM_ALLOC_RESP,
+        .status = ok ? 0 : -1,
+        .gaddr  = ok ? (uint64_t)LEO_GADDR_MAKE(g_ctx.rank, off) : 0
+    };
+    ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_DSM_ALLOC_RESP);
+}
+
+void dsm_on_lock_req(const void *buf, size_t len, uint32_t src_rank)
+{
+    if (len < sizeof(msg_dsm_lock_req_t)) return;
+    const msg_dsm_lock_req_t *rq = (const msg_dsm_lock_req_t*)buf;
+    msg_dsm_lock_resp_t resp = { .opcode=OP_DSM_LOCK_RESP, .status = 0 };
+
+    int idx = dsm_dir_find_idx(rq->gaddr);
+    if (idx < 0) { resp.status = -2; goto send; }
+
+    /* Owner local lock: use pthread rwlock to serialize */
+    if (rq->mode == DSM_LOCK_SHARED) {
+        if (pthread_rwlock_rdlock(&g_dir[idx].rwlock) != 0) resp.status = -1;
+    } else {
+        if (pthread_rwlock_wrlock(&g_dir[idx].rwlock) != 0) resp.status = -1;
+    }
+
+send:
+    ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_DSM_LOCK_RESP);
+}
+
+void dsm_on_unlock(const void *buf, size_t len, uint32_t src_rank)
+{
+    if (len < sizeof(msg_dsm_unlock_t)) return;
+    const msg_dsm_unlock_t *rq = (const msg_dsm_unlock_t*)buf;
+    int idx = dsm_dir_find_idx(rq->gaddr);
+    if (idx < 0) return;
+    (void)src_rank; /* no-op */
+
+    pthread_rwlock_unlock(&g_dir[idx].rwlock);
+}
+
+/* Assuming you already have:
+ * - dsm_dir_find_idx(leo_gaddr_t g) -> int
+ * - a directory array g_dir[idx] with fields { in_use, gaddr, size, rwlock }
+ * - a mutex g_dir_mtx guarding directory updates
+ */
+
+ void dsm_on_free_req(const void *buf, size_t len, uint32_t src_rank)
+ {
+     if (len < sizeof(msg_dsm_free_req_t)) {
+         log_warn("DSM FREE_REQ too short from rank=%u", src_rank);
+         return;
+     }
+     const msg_dsm_free_req_t *rq = (const msg_dsm_free_req_t*)buf;
+ 
+     msg_dsm_free_resp_t resp;
+     resp.opcode = OP_DSM_FREE_RESP;
+     resp.status = 0;
+ 
+     /* Only the owner rank is allowed to free the chunk */
+     int owner = LEO_GADDR_OWNER(rq->gaddr);
+     if (owner != g_ctx.rank) {
+         log_warn("DSM FREE_REQ for non-owner: g=0x%llx owner=%d me=%d",
+                  (unsigned long long)rq->gaddr, owner, g_ctx.rank);
+         resp.status = -2;
+         ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_DSM_FREE_RESP);
+         return;
+     }
+ 
+     pthread_mutex_lock(&g_dir_mtx);
+     int idx = dsm_dir_find_idx(rq->gaddr);
+     if (idx < 0 || !g_dir[idx].in_use) {
+         pthread_mutex_unlock(&g_dir_mtx);
+         log_warn("DSM FREE_REQ unknown gaddr=0x%llx", (unsigned long long)rq->gaddr);
+         resp.status = -3;
+         ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_DSM_FREE_RESP);
+         return;
+     }
+ 
+     /* Optionally validate no one is holding the lock; for MVP, we destroy directly. */
+     pthread_rwlock_destroy(&g_dir[idx].rwlock);
+     g_dir[idx].in_use = 0; /* mark as free; simple bump-allocator does not reuse */
+     pthread_mutex_unlock(&g_dir_mtx);
+ 
+     log_info("DSM: freed g=0x%llx by request from rank=%u",
+              (unsigned long long)rq->gaddr, src_rank);
+ 
+     ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_DSM_FREE_RESP);
+ }
+
+/* Internal helpers: acquire/release remote lock */
+static int dsm_lock_remote(leo_gaddr_t g, int mode, int owner)
+{
+    msg_dsm_lock_req_t rq = { .opcode=OP_DSM_LOCK_REQ, .gaddr=g, .mode=mode };
+    if (ucx_send_bytes(owner, &rq, sizeof(rq), OP_DSM_LOCK_REQ) != 0) return -1;
+
+    while (1) {
+        size_t len=0; ucp_tag_t tag=0; ucp_tag_recv_info_t info;
+        void *buf = ucx_recv_any_alloc(&len, &tag, &info);
+        if (!buf) { ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker); usleep(1000); continue; }
+        uint32_t op=(uint32_t)(tag>>32), src=(uint32_t)(tag&0xffffffffu);
+
+        if (op==OP_DSM_LOCK_RESP && src==(uint32_t)owner && len>=sizeof(msg_dsm_lock_resp_t)) {
+            int rc = ((msg_dsm_lock_resp_t*)buf)->status;
+            free(buf);
+            return rc;
+        }
+        dispatch_msg(buf, len, tag); free(buf);
+    }
+}
+static void dsm_unlock_remote(leo_gaddr_t g, int mode, int owner)
+{
+    msg_dsm_unlock_t un = { .opcode=OP_DSM_UNLOCK, .gaddr=g, .mode=mode };
+    (void)ucx_send_bytes(owner, &un, sizeof(un), OP_DSM_UNLOCK);
+}
+
+
+
 
 /* ---- Init / finalize ---- */
 int dsm_init(size_t local_pool_bytes)
@@ -341,23 +534,61 @@ void dsm_finalize(void)
 }
 
 /* ---- Alloc/free ---- */
-leo_gaddr_t leo_malloc(size_t n)
-{
-    /* 8-byte align */
-    const size_t a = 8;
-    n = (n + (a-1)) & ~(a-1);
+/* Thread-safe bump allocator guarded by g_dsm.alloc_mtx:
+   - g_dsm.arena_base, g_dsm.arena_bytes, g_dsm.bump */
+/* ... existing globals ... */
 
-    pthread_mutex_lock(&g_dsm.alloc_mtx);
-    size_t off = g_dsm.bump;
-    if (off + n > g_dsm.arena_bytes) {
-        pthread_mutex_unlock(&g_dsm.alloc_mtx);
-        log_error("DSM: OOM in local arena (req=%zu avail=%zu)", n, g_dsm.arena_bytes - off);
+leo_gaddr_t leo_malloc(size_t n, int owner_rank)
+{
+    if (n == 0) {
+        log_warn("DSM: malloc size==0");
         return 0;
     }
-    g_dsm.bump += n;
-    pthread_mutex_unlock(&g_dsm.alloc_mtx);
 
-    return LEO_GADDR_MAKE(g_ctx.rank, off);
+    /* Default placement: local rank */
+    if (owner_rank < 0) owner_rank = g_ctx.rank;
+
+    if (owner_rank >= g_ctx.world_size) {
+        log_error("DSM: owner_rank=%d out of range [0,%d)", owner_rank, g_ctx.world_size);
+        return 0;
+    }
+
+    if (owner_rank == g_ctx.rank) {
+        /* Local fast-path allocation */
+        size_t off = 0;
+
+        pthread_mutex_lock(&g_dsm.alloc_mtx);
+        if (g_dsm.bump + n <= g_dsm.arena_bytes) {
+            off = g_dsm.bump;
+            g_dsm.bump += n;
+        } else {
+            pthread_mutex_unlock(&g_dsm.alloc_mtx);
+            log_error("DSM: local arena OOM (req=%zu avail=%zu)",
+                      n, (g_dsm.arena_bytes - g_dsm.bump));
+            return 0;
+        }
+        pthread_mutex_unlock(&g_dsm.alloc_mtx);
+
+        leo_gaddr_t g = LEO_GADDR_MAKE(g_ctx.rank, off);
+        if (dsm_dir_insert(g, n) != 0) {
+            log_error("DSM: dir_insert failed for g=0x%llx", (unsigned long long)g);
+            return 0;
+        }
+        log_debug("DSM: local alloc rank=%d off=%zu size=%zu -> g=0x%llx",
+                  g_ctx.rank, off, n, (unsigned long long)g);
+        return g;
+    } else {
+        /* Remote allocation via control-plane RPC */
+        leo_gaddr_t g = 0;
+        int rc = dsm_remote_alloc(owner_rank, n, &g);
+        if (rc != 0 || g == 0) {
+            log_error("DSM: remote alloc failed owner=%d size=%zu rc=%d", owner_rank, n, rc);
+            return 0;
+        }
+        log_debug("DSM: remote alloc owner=%d size=%zu -> g=0x%llx",
+                  owner_rank, n, (unsigned long long)g);
+        return g;
+    }
 }
 
 int leo_free(leo_gaddr_t g)
@@ -367,64 +598,41 @@ int leo_free(leo_gaddr_t g)
     return 0;
 }
 
-/* ---- Read/Write ---- */
-int leo_read(void *dst, leo_gaddr_t g, size_t n)
+/* leo_read: SHARED lock for remote */
+int leo_read(void *dst, leo_gaddr_t src, size_t n)
 {
-    if (g == 0 || n == 0) return 0;
-    int owner = LEO_GADDR_OWNER(g);
-    uint64_t off = LEO_GADDR_OFFSET(g);
-
-    if ((off + n) > g_dsm.arena_bytes) {
-        if (owner == g_ctx.rank) {
-            /* local bound check against our arena */
-        } else {
-            /* remote bound check is unknown; we trust caller */
-        }
-    }
-
+    int owner = LEO_GADDR_OWNER(src);
+    uint64_t off = LEO_GADDR_OFFSET(src);
     if (owner == g_ctx.rank) {
-        memcpy(dst, (char*)g_dsm.arena_base + off, n);
+        memcpy(dst, (uint8_t*)g_dsm.arena_base + off, n);
         return 0;
     } else {
-        if (!g_dsm.have_peer[owner] || !g_dsm.peer_rkey[owner]) return -ENOENT;
+        if (dsm_lock_remote(src, DSM_LOCK_SHARED, owner) != 0) return -1;
 
-        uint64_t remote_addr = g_dsm.peer_base[owner] + off;
+        /* RDMA GET ... (omitted: your existing ucx_get_nbx + flush) */
+        int rc = ucx_get_block(dst, n, owner, g_dsm.peer_base[owner] + off, g_dsm.peer_rkey[owner]);
 
-        ucp_request_param_t prm; memset(&prm, 0, sizeof(prm));
-        prm.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
-        prm.datatype     = ucp_dt_make_contig(1);
-        ucs_status_ptr_t req = ucp_get_nbx(g_ctx.ucx_ctx.eps[owner],
-                                        dst, n, remote_addr, g_dsm.peer_rkey[owner], &prm);
-        if (ucx_wait(req) != 0) return -1;
-        return 0;
+        dsm_unlock_remote(src, DSM_LOCK_SHARED, owner);
+        return rc;
     }
 }
 
-int leo_write(leo_gaddr_t g, const void *src, size_t n)
+/* leo_write: EXCLUSIVE lock for remote */
+int leo_write(leo_gaddr_t dst, const void *src, size_t n)
 {
-    if (g == 0 || n == 0) return 0;
-    int owner = LEO_GADDR_OWNER(g);
-    uint64_t off = LEO_GADDR_OFFSET(g);
-
+    int owner = LEO_GADDR_OWNER(dst);
+    uint64_t off = LEO_GADDR_OFFSET(dst);
     if (owner == g_ctx.rank) {
-        memcpy((char*)g_dsm.arena_base + off, src, n);
+        memcpy((uint8_t*)g_dsm.arena_base + off, src, n);
         return 0;
     } else {
-        if (!g_dsm.have_peer[owner] || !g_dsm.peer_rkey[owner]) return -ENOENT;
+        if (dsm_lock_remote(dst, DSM_LOCK_EXCL, owner) != 0) return -1;
 
-        uint64_t remote_addr = g_dsm.peer_base[owner] + off;
+        /* RDMA PUT ... (omitted: your existing ucx_put_nbx + flush) */
+        int rc = ucx_put_block(src, n, owner, g_dsm.peer_base[owner] + off, g_dsm.peer_rkey[owner]);
 
-        ucp_request_param_t prm; memset(&prm, 0, sizeof(prm));
-        prm.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
-        prm.datatype     = ucp_dt_make_contig(1);
-        ucs_status_ptr_t req = ucp_put_nbx(g_ctx.ucx_ctx.eps[owner],
-                                        src, n, remote_addr, g_dsm.peer_rkey[owner], &prm);
-        if (ucx_wait(req) != 0) return -1;
-
-        /* Ensure remote visibility before return: flush ep */
-        ucs_status_ptr_t f = ucp_ep_flush_nbx(g_ctx.ucx_ctx.eps[owner], &prm);
-        if (ucx_wait(f) != 0) return -1;
-        return 0;
+        dsm_unlock_remote(dst, DSM_LOCK_EXCL, owner);
+        return rc;
     }
 }
  

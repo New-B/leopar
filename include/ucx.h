@@ -60,6 +60,17 @@ void *ucx_recv_any_alloc(size_t *out_len, ucp_tag_t *out_tag, ucp_tag_recv_info_
 int ucx_broadcast_bytes(const void *buf, size_t len, int opcode);
 
 
+/* === NEW: simple contiguous RDMA helpers ===
+ * remote_addr must be the peer's base + offset (UCS_PTR_BYTE_OFFSET style).
+ * rkey is the peer's unpacked rkey for its arena.
+ */
+ int ucx_put_block(const void *src, size_t len, int dst_rank,
+    uint64_t remote_addr, ucp_rkey_h rkey);
+
+int ucx_get_block(void *dst, size_t len, int src_rank,
+    uint64_t remote_addr, ucp_rkey_h rkey);
+
+
 
 /* Create UCX endpoints for all peers */
 int ucx_tcp_create_all_eps(ucp_context_h context,

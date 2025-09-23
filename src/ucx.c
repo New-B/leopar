@@ -287,6 +287,85 @@ int ucx_broadcast_bytes(const void *buf, size_t len, int opcode)
     return rc;
 }
 
+/* Wait for a UCX nbx request to complete. Return 0 on success, -1 on error. */
+static int ucx_wait_req(ucs_status_ptr_t req, const char *what)
+{
+    if (req == NULL) return 0; /* completed immediately */
+
+    if (UCS_PTR_IS_ERR(req)) {
+        ucs_status_t st = UCS_PTR_STATUS(req);
+        log_error("UCX %s failed immediately: %s", what, ucs_status_string(st));
+        return -1;
+    }
+
+    /* Progress until completion */
+    ucs_status_t st = UCS_INPROGRESS;
+    while (st == UCS_INPROGRESS) {
+        ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker);
+        st = ucp_request_check_status(req);
+        /* Optional: small sleep to reduce busy spin */
+        if (st == UCS_INPROGRESS) usleep(100);
+    }
+    ucp_request_free(req);
+
+    if (st != UCS_OK) {
+        log_error("UCX %s completed with error: %s", what, ucs_status_string(st));
+        return -1;
+    }
+    return 0;
+}
+
+int ucx_put_block(const void *src, size_t len, int dst_rank,
+                  uint64_t remote_addr, ucp_rkey_h rkey)
+{
+    if (dst_rank < 0 || dst_rank >= g_ctx.world_size) return -1;
+    ucp_ep_h ep = g_ctx.ucx_ctx.eps[dst_rank];
+    if (!ep) {
+        log_error("UCX put: no EP to rank=%d", dst_rank);
+        return -1;
+    }
+
+    ucp_request_param_t p;
+    memset(&p, 0, sizeof(p));
+    p.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
+    p.datatype     = ucp_dt_make_contig(1);
+
+    ucs_status_ptr_t r = ucp_put_nbx(ep, src, len, remote_addr, rkey, &p);
+    if (ucx_wait_req(r, "put_nbx")) return -1;
+
+    /* Ensure remote visibility (strong semantics for DSM write) */
+    ucp_request_param_t pf; memset(&pf, 0, sizeof(pf));
+    ucs_status_ptr_t fr = ucp_ep_flush_nbx(ep, &pf);
+    if (ucx_wait_req(fr, "ep_flush")) return -1;
+
+    return 0;
+}
+int ucx_get_block(void *dst, size_t len, int src_rank,
+                  uint64_t remote_addr, ucp_rkey_h rkey)
+{
+    if (src_rank < 0 || src_rank >= g_ctx.world_size) return -1;
+    ucp_ep_h ep = g_ctx.ucx_ctx.eps[src_rank];
+    if (!ep) {
+        log_error("UCX get: no EP to rank=%d", src_rank);
+        return -1;
+    }
+
+    ucp_request_param_t p;
+    memset(&p, 0, sizeof(p));
+    p.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
+    p.datatype     = ucp_dt_make_contig(1);
+
+    ucs_status_ptr_t r = ucp_get_nbx(ep, dst, len, remote_addr, rkey, &p);
+    if (ucx_wait_req(r, "get_nbx")) return -1;
+
+    // /* Ensure local visibility (strong semantics for DSM read) */
+    // ucp_request_param_t pf; memset(&pf, 0, sizeof(pf));
+    // ucs_status_ptr_t fr = ucp_ep_flush_nbx(ep, &pf);
+    // if (ucx_wait_req(fr, "ep_flush")) return -1;
+
+    return 0;
+
+}
 /* ------------------------- create UCX endpoints ------------------------- */
 
 int ucx_tcp_create_all_eps(ucp_context_h context,

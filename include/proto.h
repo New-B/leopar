@@ -42,6 +42,17 @@ enum {
 
     OP_DSM_ANN        = 30,   /* DSM rkey announce (see dsm.c) */
 
+    /* NEW: remote allocation/free */
+    OP_DSM_ALLOC_REQ  = 31,
+    OP_DSM_ALLOC_RESP = 32,
+    OP_DSM_FREE_REQ   = 33,
+    OP_DSM_FREE_RESP  = 34,
+
+    /* NEW: implicit locking for R/W (shared/exclusive) */
+    OP_DSM_LOCK_REQ   = 35,
+    OP_DSM_LOCK_RESP  = 36,
+    OP_DSM_UNLOCK     = 37,
+
     OP_BARRIER        = 40   /* for runtime sync */
 };
 
@@ -124,6 +135,50 @@ typedef struct {
     uint32_t epoch;         /* barrier generation id within the team */
     uint64_t team_id;       /* deterministic team id */
 } msg_tb_release_t;
+
+/* Remote alloc request -> sent to owner */
+typedef struct {
+    uint32_t opcode;       /* OP_DSM_ALLOC_REQ */
+    uint64_t size_bytes;   /* requested bytes */
+} msg_dsm_alloc_req_t;
+
+/* Remote alloc response -> sent back to requester */
+typedef struct {
+    uint32_t opcode;       /* OP_DSM_ALLOC_RESP */
+    int32_t  status;       /* 0 ok, <0 error */
+    uint64_t gaddr;        /* leo_gaddr_t when ok */
+} msg_dsm_alloc_resp_t;
+
+/* Remote free request -> sent to owner */
+typedef struct {
+    uint32_t opcode;       /* OP_DSM_FREE_REQ */
+    uint64_t gaddr;        /* target global address */
+} msg_dsm_free_req_t;
+
+/* Remote free response */
+typedef struct {
+    uint32_t opcode;       /* OP_DSM_FREE_RESP */
+    int32_t  status;       /* 0 ok, <0 error */
+} msg_dsm_free_resp_t;
+
+/* Lock request: SHARED for read, EXCLUSIVE for write */
+enum { DSM_LOCK_SHARED = 1, DSM_LOCK_EXCL = 2 };
+typedef struct {
+    uint32_t opcode;       /* OP_DSM_LOCK_REQ */
+    uint64_t gaddr;        /* target chunk */
+    uint32_t mode;         /* DSM_LOCK_SHARED / DSM_LOCK_EXCL */
+} msg_dsm_lock_req_t;
+
+typedef struct {
+    uint32_t opcode;       /* OP_DSM_LOCK_RESP */
+    int32_t  status;       /* 0 grant, <0 deny/timeout */
+} msg_dsm_lock_resp_t;
+
+typedef struct {
+    uint32_t opcode;       /* OP_DSM_UNLOCK */
+    uint64_t gaddr;
+    uint32_t mode;         /* which mode to drop (for safety) */
+} msg_dsm_unlock_t;
 
 #pragma pack(pop)
 

@@ -197,6 +197,11 @@ void dispatch_msg(void *buf, size_t len, ucp_tag_t tag)
         case OP_JOIN_REQ:   handle_join_req(buf, len, src_rank);   break;
         /* NEW: DSM announce */
         case OP_DSM_ANN:       dsm_on_announce(buf,len,src_rank);      break;
+        case OP_DSM_ALLOC_REQ:  dsm_on_alloc_req(buf, len, src_rank);  break;
+        case OP_DSM_FREE_REQ:   dsm_on_free_req(buf, len, src_rank);   break;
+        case OP_DSM_LOCK_REQ:   dsm_on_lock_req(buf, len, src_rank);   break;
+        case OP_DSM_UNLOCK:     dsm_on_unlock(buf, len, src_rank);     break;
+        /* RESP 类型（ALLOC_RESP / FREE_RESP / LOCK_RESP）由调用方等待，不在 dispatcher 消费 */
         case OP_EXIT_NOTIFY:
             /* 这里可补：更新元数据/回收资源/转发通知等 */
             log_info("EXIT_NOTIFY received (len=%zu) from rank=%u", len, src_rank);

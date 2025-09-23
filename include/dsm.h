@@ -28,6 +28,12 @@ typedef uint64_t leo_gaddr_t;
 #define LEO_GADDR_OWNER(g)          ( (int)(((g) >> 48) & 0xffffull) )
 #define LEO_GADDR_OFFSET(g)         ( (uint64_t)((g) & 0x0000FFFFFFFFFFFFull) )
 
+/* === NEW: dispatcher-visible control-plane handlers === */
+void dsm_on_alloc_req(const void *buf, size_t len, uint32_t src_rank);
+void dsm_on_free_req (const void *buf, size_t len, uint32_t src_rank);
+void dsm_on_lock_req (const void *buf, size_t len, uint32_t src_rank);
+void dsm_on_unlock   (const void *buf, size_t len, uint32_t src_rank);
+
 /* Initialize DSM with a local arena size in bytes (e.g., from config).
 * Returns 0 on success.
 */
@@ -37,16 +43,16 @@ int dsm_init(size_t local_pool_bytes);
 void dsm_finalize(void);
 
 /* Allocate n bytes from *local* arena and return global pointer. */
-leo_gaddr_t leo_malloc(size_t n);
+leo_gaddr_t leo_malloc(size_t n, int owner_rank);
 
 /* Free a global pointer (MVP: no-op). */
 int leo_free(leo_gaddr_t g);
 
 /* Read n bytes from global pointer g into local buffer dst. */
-int leo_read(void *dst, leo_gaddr_t g, size_t n);
+int leo_read(void *dst, leo_gaddr_t src, size_t n);
 
 /* Write n bytes from local buffer src to global pointer g. */
-int leo_write(leo_gaddr_t g, const void *src, size_t n);
+int leo_write(leo_gaddr_t dst, const void *src, size_t n);
 
 /* NEW: dispatcher will call this when OP_DSM_ANN arrives */
 void dsm_on_announce(const void *buf, size_t len, uint32_t src_rank);

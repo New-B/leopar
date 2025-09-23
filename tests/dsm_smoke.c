@@ -24,7 +24,7 @@ int main(int argc, char **argv) {
 
 
     /* Each rank allocates locally, writes its rank id, others read it. */
-    leo_gaddr_t g = leo_malloc(64);
+    leo_gaddr_t g = leo_malloc(64,1);
     char msg[64]; 
     log_debug("leo_malloc returned gaddr=0x%llx", (unsigned long long)g);
     snprintf(msg, sizeof(msg), "hello-from-rank-%d", my_rank);
@@ -32,7 +32,7 @@ int main(int argc, char **argv) {
     log_debug("msg:%s", msg); 
 
     /* Let rank 0 read from everybody */
-    if (my_rank == 0) {
+   if (my_rank == 0) {
         for (int r = 0; r < leo_world_size(); ++r) {
             leo_gaddr_t gr = LEO_GADDR_MAKE(r, LEO_GADDR_OFFSET(g)); /* same offset on each rank's arena */
             char buf[64] = {0};
