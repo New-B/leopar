@@ -32,15 +32,11 @@ int main(int argc, char **argv) {
     leo_write(g, msg, strlen(msg)+1);
     log_debug("msg:%s", msg); 
 
-    /* Let rank 0 read from everybody */
-   if (my_rank == 1) {
-        for (int r = 0; r < leo_world_size(); ++r) {
-            leo_gaddr_t gr = LEO_GADDR_MAKE(r, LEO_GADDR_OFFSET(g)); /* same offset on each rank's arena */
-            char buf[64] = {0};
-            leo_read(buf, gr, sizeof(buf));
-            log_debug("read from rank %d: %s", r, buf);
-        }
-    }
+
+    //leo_gaddr_t gr = LEO_GADDR_MAKE(r, LEO_GADDR_OFFSET(g)); /* same offset on each rank's arena */
+    char buf[64] = {0};
+    leo_read(buf, g, sizeof(buf));
+    log_debug("read from rank %d: %s", my_rank, buf);
 
     leopar_finalize();
     return 0;

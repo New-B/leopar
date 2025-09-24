@@ -194,7 +194,12 @@ static int dsm_dir_insert(leo_gaddr_t g, size_t sz)
 /* Internal: perform remote allocation by RPC */
 static int dsm_remote_alloc(int owner, size_t n, leo_gaddr_t *out)
 {
-    msg_dsm_alloc_req_t req = { .opcode = OP_DSM_ALLOC_REQ, .size_bytes = n };
+    msg_dsm_alloc_req_t req = {
+        .opcode     = OP_DSM_ALLOC_REQ,
+        .size_bytes = (uint64_t)n,   // ← 用 size_bytes
+        .align      = 64,
+        .reserved   = 0
+    };
     int rc = ucx_send_bytes(owner, &req, sizeof(req), OP_DSM_ALLOC_REQ);
     if (rc != 0) {
         log_error("ALLOC_REQ send failed to %d", owner);
@@ -224,16 +229,22 @@ static int dsm_remote_alloc(int owner, size_t n, leo_gaddr_t *out)
 /* Dispatcher handler: owner side alloc */
 void dsm_on_alloc_req(const void *buf, size_t len, uint32_t src_rank)
 {
-    if (len < sizeof(msg_dsm_alloc_req_t)) return;
+    if (len < sizeof(msg_dsm_alloc_req_t)) {
+        log_error("ALLOC_REQ too short len=%zu", len);
+        return;
+    }
     const msg_dsm_alloc_req_t *rq = (const msg_dsm_alloc_req_t*)buf;
 
+    size_t need = (size_t)rq->size_bytes;
+    size_t align= rq->align ? rq->align : 64;
     /* local bump allocator on owner */
     size_t off = 0;  /* obtain offset from your allocator */
     int    ok  = 0;
     pthread_mutex_lock(&g_dsm.alloc_mtx);
-    if (g_dsm.bump + rq->size_bytes <= g_dsm.arena_bytes) {
-        off = g_dsm.bump;
-        g_dsm.bump += rq->size_bytes;
+    size_t aligned = (g_dsm.bump + (align-1)) & ~(align-1);
+    if (aligned + need <= g_dsm.arena_bytes) {
+        off = aligned;
+        g_dsm.bump = aligned + need;
         ok = 1;
         /* record metadata for lock mgmt: see 5.3 */
         dsm_dir_insert(LEO_GADDR_MAKE(g_ctx.rank, off), rq->size_bytes);
@@ -245,7 +256,13 @@ void dsm_on_alloc_req(const void *buf, size_t len, uint32_t src_rank)
         .status = ok ? 0 : -1,
         .gaddr  = ok ? (uint64_t)LEO_GADDR_MAKE(g_ctx.rank, off) : 0
     };
-    ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_DSM_ALLOC_RESP);
+    int rc = ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_DSM_ALLOC_RESP);
+    if (rc != 0) {
+        log_error("ALLOC_RESP send to %u failed rc=%d", src_rank, rc);
+    } else {
+        log_info("ALLOC_REQ from %u: size=%zu off=%zu status=%d",
+                 src_rank, need, off, resp.status);
+    }
 }
 
 void dsm_on_lock_req(const void *buf, size_t len, uint32_t src_rank)

@@ -151,6 +151,8 @@ typedef struct {
 typedef struct {
     uint32_t opcode;       /* OP_DSM_ALLOC_REQ */
     uint64_t size_bytes;   /* requested bytes */
+    uint32_t align;           /* optional align, e.g. 64 */
+    uint32_t reserved;
 } msg_dsm_alloc_req_t;
 
 /* Remote alloc response -> sent back to requester */

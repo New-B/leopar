@@ -51,6 +51,10 @@ static const uint32_t k_req_opcodes[] = {
     OP_JOIN_REQ,
     OP_EXIT_NOTIFY,
     OP_DSM_ANN,
+    OP_DSM_ALLOC_REQ,
+    OP_DSM_FREE_REQ,
+    OP_DSM_LOCK_REQ,
+    OP_DSM_UNLOCK,
     /* DSM requests (add the ones you implemented): */
     /* OP_DSM_ALLOC_REQ, OP_DSM_FREE_REQ, OP_DSM_LOCK_REQ, OP_DSM_UNLOCK_REQ, ... */
 };
