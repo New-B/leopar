@@ -21,6 +21,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "leopar_init failed\n");
         return 1;
     }
+    log_info("leopar_init succeeded at rank %d", my_rank);
 
 
     /* Each rank allocates locally, writes its rank id, others read it. */
@@ -32,7 +33,7 @@ int main(int argc, char **argv) {
     log_debug("msg:%s", msg); 
 
     /* Let rank 0 read from everybody */
-   if (my_rank == 0) {
+   if (my_rank == 1) {
         for (int r = 0; r < leo_world_size(); ++r) {
             leo_gaddr_t gr = LEO_GADDR_MAKE(r, LEO_GADDR_OFFSET(g)); /* same offset on each rank's arena */
             char buf[64] = {0};

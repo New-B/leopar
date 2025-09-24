@@ -195,27 +195,30 @@ static int dsm_dir_insert(leo_gaddr_t g, size_t sz)
 static int dsm_remote_alloc(int owner, size_t n, leo_gaddr_t *out)
 {
     msg_dsm_alloc_req_t req = { .opcode = OP_DSM_ALLOC_REQ, .size_bytes = n };
-    if (ucx_send_bytes(owner, &req, sizeof(req), OP_DSM_ALLOC_REQ) != 0)
-        return -1;
-
-    while (1) {
-        size_t len=0; ucp_tag_t tag=0; ucp_tag_recv_info_t info;
-        void *buf = ucx_recv_any_alloc(&len, &tag, &info);
-        if (!buf) { ucp_worker_progress(g_ctx.ucx_ctx.ucp_worker); usleep(1000); continue; }
-        uint32_t op = (uint32_t)(tag >> 32);
-        uint32_t src= (uint32_t)(tag & 0xffffffffu);
-
-        if (op == OP_DSM_ALLOC_RESP && src == (uint32_t)owner && len >= sizeof(msg_dsm_alloc_resp_t)) {
-            msg_dsm_alloc_resp_t *r = (msg_dsm_alloc_resp_t*)buf;
-            int rc = r->status;
-            if (rc == 0) *out = (leo_gaddr_t)r->gaddr;
-            free(buf);
-            return rc;
-        }
-        /* Dispatch other control-plane messages to keep runtime making progress */
-        dispatch_msg(buf, len, tag);
-        free(buf);
+    int rc = ucx_send_bytes(owner, &req, sizeof(req), OP_DSM_ALLOC_REQ);
+    if (rc != 0) {
+        log_error("ALLOC_REQ send failed to %d", owner);
+        return rc;
     }
+    log_debug("DSM: sent alloc request of %zu bytes to owner %d", n, owner);
+
+    // 2) blocking recv RESP：精准匹配 opcode + from_rank
+    msg_dsm_alloc_resp_t resp;
+    rc = ucx_recv_blocking(OP_DSM_ALLOC_RESP, owner, &resp, sizeof(resp), /*timeout_ms*/10000);
+    if (rc != 0) {
+        log_error("ALLOC_RESP recv failed from %d, rc=%d", owner, rc);
+        return rc;
+    }
+    if (resp.status != 0) {
+        log_error("ALLOC_RESP status=%d from %d", resp.status, owner);
+        return -1;
+    }
+
+    // 3) 返回全局地址（按你的结构体字段命名）
+    *out = (leo_gaddr_t)resp.gaddr;  // 或根据 offset 拼 gaddr
+    log_debug("ALLOC ok owner=%d gaddr=0x%llx", owner, (unsigned long long)*out);
+    return 0;
+
 }
 
 /* Dispatcher handler: owner side alloc */

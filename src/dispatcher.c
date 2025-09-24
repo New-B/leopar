@@ -216,12 +216,14 @@ void dispatch_msg(void *buf, size_t len, ucp_tag_t tag)
             break;
          /* NEW: DSM announce */
         case OP_DSM_ANN:       dsm_on_announce(buf,len,src_rank);      break;
-        // case OP_DSM_ALLOC_REQ:  dsm_on_alloc_req(buf, len, src_rank);  break;
-        // case OP_DSM_FREE_REQ:   dsm_on_free_req(buf, len, src_rank);   break;
-        // case OP_DSM_LOCK_REQ:   dsm_on_lock_req(buf, len, src_rank);   break;
-        // case OP_DSM_UNLOCK:     dsm_on_unlock(buf, len, src_rank);     break;
+        case OP_DSM_ALLOC_REQ:  dsm_on_alloc_req(buf, len, src_rank);  break;
+        case OP_DSM_FREE_REQ:   dsm_on_free_req(buf, len, src_rank);   break;
+        case OP_DSM_LOCK_REQ:   dsm_on_lock_req(buf, len, src_rank);   break;
+        case OP_DSM_UNLOCK:     dsm_on_unlock(buf, len, src_rank);     break;
         case OP_CREATE_ACK:
         case OP_JOIN_RESP:
+        case OP_DSM_ALLOC_RESP:
+        case OP_DSM_FREE_RESP:
             /* Responce opcodes are interntionally NOT consumed here: */
             log_debug("Response opcode=%u from rank=%u ignored by dispatcher", opcode, src_rank);
             break;
