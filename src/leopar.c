@@ -189,34 +189,44 @@ int leo_thread_create_named(leo_thread_t *thread,
         free(msg_buf);
 
         /* 6) Wait for CREATE_ACK from target */
-        while (1) {
-            size_t len=0; ucp_tag_t tag=0; ucp_tag_recv_info_t info;
-            void *ack_buf = ucx_recv_any_alloc(&len, &tag, &info);
-            if (!ack_buf) continue;
-
-            uint32_t opcode = (uint32_t)(tag >> 32);
-            uint32_t src    = (uint32_t)(tag & 0xffffffffu);
-
-            if (opcode == OP_CREATE_ACK &&
-                src == (uint32_t)dest_rank && 
-                len >= sizeof(msg_create_ack_t)) {
-
-                msg_create_ack_t *ack = (msg_create_ack_t*)ack_buf;
-                if (ack->status == 0) {
-                    if (thread) *thread = (leo_thread_t)ack->gtid;
-                    log_info("CREATE_ACK ok from rank=%d: gtid=%" PRIu64, dest_rank, ack->gtid);
-                    free(ack_buf);
-                    break;
-                } else {
-                    log_error("CREATE_ACK failed status=%d from rank=%d", (int)ack->status, dest_rank);
-                    free(ack_buf);
-                    return -1;
-                }
-            }
-
-            /* Non-matching message: let dispatcher handle or drop; we free here to keep simple */
-            free(ack_buf);
+        msg_create_ack_t ack;
+        if (ucx_recv_blocking(OP_CREATE_ACK, dest_rank, &ack, sizeof(ack), 30000) != 0) {
+            log_error("wait CREATE_ACK timeout from %d", dest_rank);
+            return -1;
         }
+        if (ack.status != 0) {
+            log_error("CREATE_ACK status=%d from %d", ack.status, dest_rank);
+            return -1;
+        }
+        if (thread) *thread = (leo_thread_t)ack.gtid;
+        // while (1) {
+        //     size_t len=0; ucp_tag_t tag=0; ucp_tag_recv_info_t info;
+        //     void *ack_buf = ucx_recv_any_alloc(&len, &tag, &info);
+        //     if (!ack_buf) continue;
+
+        //     uint32_t opcode = (uint32_t)(tag >> 32);
+        //     uint32_t src    = (uint32_t)(tag & 0xffffffffu);
+
+        //     if (opcode == OP_CREATE_ACK &&
+        //         src == (uint32_t)dest_rank && 
+        //         len >= sizeof(msg_create_ack_t)) {
+
+        //         msg_create_ack_t *ack = (msg_create_ack_t*)ack_buf;
+        //         if (ack->status == 0) {
+        //             if (thread) *thread = (leo_thread_t)ack->gtid;
+        //             log_info("CREATE_ACK ok from rank=%d: gtid=%" PRIu64, dest_rank, ack->gtid);
+        //             free(ack_buf);
+        //             break;
+        //         } else {
+        //             log_error("CREATE_ACK failed status=%d from rank=%d", (int)ack->status, dest_rank);
+        //             free(ack_buf);
+        //             return -1;
+        //         }
+        //     }
+
+        //     /* Non-matching message: let dispatcher handle or drop; we free here to keep simple */
+        //     free(ack_buf);
+        // }
     }
     log_info("Sent thread create request func_id=%d to rank=%d", func_id, target_rank);
 
@@ -257,27 +267,51 @@ int leo_thread_join(leo_thread_t thread, void **retval)
     }
 
     /* 3. Wait for JOIN_RESP */
-    while (1) {
-        size_t len = 0;
-        ucp_tag_t tag = 0;
-        ucp_tag_recv_info_t info;
-        void *resp_buf = ucx_recv_any_alloc(&len, &tag, &info);
 
-        if (!resp_buf) continue;
-
-        msg_join_resp_t *resp = (msg_join_resp_t*)resp_buf;
-        if (resp->opcode == OP_JOIN_RESP && resp->gtid == thread) {
-            if (resp->done) {
-                log_info("JOIN_RESP: gtid=%" PRIu64 " completed", thread);
-                free(resp_buf);
-                return 0;
-            } else {
-                log_warn("JOIN_RESP: gtid=%" PRIu64 " not finished yet", thread);
-                /* Blocking design: keep waiting until done==1 */
-            }
+    /* 3) Precise wait for JOIN_RESP from owner_rank */
+    msg_join_resp_t resp;
+    for (;;) {
+        if (ucx_recv_blocking(OP_JOIN_RESP, owner_rank, &resp, sizeof(resp), /*timeout_ms*/0) != 0) {
+            log_error("JOIN_RESP wait failed from rank=%d", owner_rank);
+            return -1;
         }
-        free(resp_buf);
+        if (resp.gtid != thread) {
+            /* got other thread's JOIN_RESP (shouldn’t happen if owner replies 1:1),
+               but to be robust you could buffer/dispatch here.
+               For now, just warn and continue waiting. */
+            log_warn("JOIN_RESP gtid mismatch: expect=%" PRIu64 " got=%" PRIu64,
+                     (uint64_t)thread, (uint64_t)resp.gtid);
+            continue;
+        }
+        if (resp.done) {
+            /* NOTE: pthread 的返回值无法跨进程直接带回；如需要，可扩展协议携带
+               一个“任务级返回码/序列化结果”。当前仅语义：完成/未完成。 */
+            return 0;
+        }
+        /* 如果对端实现是“忙等通知”，理论上不会出现 done=0 的多次响应；
+           若你未来支持分段进度，这里可以继续等待/超时处理。*/
     }
+    // while (1) {
+    //     size_t len = 0;
+    //     ucp_tag_t tag = 0;
+    //     ucp_tag_recv_info_t info;
+    //     void *resp_buf = ucx_recv_any_alloc(&len, &tag, &info);
+
+    //     if (!resp_buf) continue;
+
+    //     msg_join_resp_t *resp = (msg_join_resp_t*)resp_buf;
+    //     if (resp->opcode == OP_JOIN_RESP && resp->gtid == thread) {
+    //         if (resp->done) {
+    //             log_info("JOIN_RESP: gtid=%" PRIu64 " completed", thread);
+    //             free(resp_buf);
+    //             return 0;
+    //         } else {
+    //             log_warn("JOIN_RESP: gtid=%" PRIu64 " not finished yet", thread);
+    //             /* Blocking design: keep waiting until done==1 */
+    //         }
+    //     }
+    //     free(resp_buf);
+    // }
 }
 
 
