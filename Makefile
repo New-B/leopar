@@ -4,28 +4,31 @@
 # ===== Toolchain & UCX path =====
 CC        := gcc
 # Default UCX_HOME (can be overridden in `make UCX_HOME=/path/to/ucx`)
-UCX_HOME  := /usr
+UCX_HOME  ?= /usr/local/ucx-1.16.0
 
 # Try pkg-config first; fallback to UCX_HOME
-HAVE_PKG_UCX := $(shell pkg-config --exists ucx && echo yes || echo no)
+HAVE_PKG_UCX := $(shell PKG_CONFIG_PATH=$(UCX_HOME)/lib/pkgconfig:$(PKG_CONFIG_PATH) pkg-config --exists ucx && echo yes || echo no)
 
 ifeq ($(HAVE_PKG_UCX),yes)
-  UCX_CFLAGS := $(shell pkg-config --cflags ucx)
-  UCX_LIBS   := $(shell pkg-config --libs   ucx)   # typically: -L... -lucp -luct -lucs -lucm
+  UCX_CFLAGS := $(shell PKG_CONFIG_PATH=$(UCX_HOME)/lib/pkgconfig:$(PKG_CONFIG_PATH) pkg-config --cflags ucx)
+  UCX_LIBS   := $(shell PKG_CONFIG_PATH=$(UCX_HOME)/lib/pkgconfig:$(PKG_CONFIG_PATH) pkg-config --libs ucx)
+  UCX_LIBDIR := $(shell PKG_CONFIG_PATH=$(UCX_HOME)/lib/pkgconfig:$(PKG_CONFIG_PATH) pkg-config --variable=libdir ucx)
   INCDIRS    := -Iinclude $(UCX_CFLAGS)
   LIBDIRS    :=
   UCX_LINK   := $(UCX_LIBS)
 else
+  # Fallback without pkg-config
+  # Detect lib dir (lib vs lib64)
+  UCX_LIBDIR := $(shell if [ -d "$(UCX_HOME)/lib64" ]; then echo "$(UCX_HOME)/lib64"; else echo "$(UCX_HOME)/lib"; fi)
   INCDIRS    := -Iinclude -I$(UCX_HOME)/include
-  LIBDIRS    := -L$(UCX_HOME)/lib
-  # Fallback: explicitly list all ucx components (order matters)
+  LIBDIRS    := -L$(UCX_LIBDIR)
   UCX_LINK   := -lucp -luct -lucs -lucm
 endif
 
-CFLAGS    := -Wall -g -D_GNU_SOURCE $(INCDIRS)
+CFLAGS   := -Wall -g -D_GNU_SOURCE $(INCDIRS)
 # -rdynamic makes main binary symbols visible to dlsym()
 # --no-as-needed prevents linker from dropping transitive UCX libs
-LDFLAGS   := $(LIBDIRS) $(UCX_LINK) -ldl -lpthread -rdynamic -Wl,--no-as-needed
+LDFLAGS  := $(LIBDIRS) $(UCX_LINK) -ldl -lpthread -rdynamic -Wl,--no-as-needed -Wl,-rpath,$(UCX_LIBDIR)
 # If UCX is in a non-standard runtime path, uncomment one of:
 # LDFLAGS  += -Wl,-rpath,$(UCX_HOME)/lib
 # LDFLAGS  += $(shell pkg-config --variable=libdir ucx 2>/dev/null | sed 's#^#-Wl,-rpath,#')
@@ -50,6 +53,7 @@ HEADERS  := include/leopar.h \
             include/log.h
 
 # ===== Runtime sources =====
+# ===== Runtime sources =====
 SRCS     := $(SRC_DIR)/leopar.c \
             $(SRC_DIR)/context.c \
             $(SRC_DIR)/tcp.c \
@@ -59,19 +63,24 @@ SRCS     := $(SRC_DIR)/leopar.c \
             $(SRC_DIR)/threadtable.c \
             $(SRC_DIR)/scheduler.c \
             $(SRC_DIR)/sync.c \
-            $(SRC_DIR)/async.c \
-            $(SRC_DIR)/batch.c \
-            $(SRC_DIR)/team.c \
-            $(SRC_DIR)/attr.c \
             $(SRC_DIR)/query.c \
-            $(SRC_DIR)/log.c 
+            $(SRC_DIR)/log.c \
+#            $(SRC_DIR)/barrier.c
+#            $(SRC_DIR)/async.c \
+#            $(SRC_DIR)/batch.c \
+#            $(SRC_DIR)/team.c \
+#            $(SRC_DIR)/attr.c \
+#            $(SRC_DIR)/dsm.c
 
 OBJS     := $(SRCS:.c=.o)
 
 # Demo programs (add more demos here)
 DEMOS    := leoparDemo_create_join \
             leopar_api_multi_nodes_demo \
-            leopar_byval_demo #\
+            leopar_byval_demo \
+            leopar_mb_create_join # \
+            leopar_mb_fun_announce \
+            leopar_mb_scheduler \
             leopar_barrier_demo \
             leopar_mutex_demo
 
