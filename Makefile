@@ -80,7 +80,11 @@ OBJS     := $(SRCS:.c=.o)
 DEMOS    := leoparDemo_create_join \
             leopar_api_multi_nodes_demo \
             leopar_byval_demo \
+            leopar_mb_create_join \
+            leopar_mb_fun_announce \
+            leopar_mb_scheduler \
             dsm_smoke #\
+            leopar_pagerank_local \
             leopar_barrier_demo \
             leopar_mutex_demo
 
