@@ -5,6 +5,7 @@
 #include <string.h>
 #include <time.h>
 #include <errno.h>
+#include <unistd.h>
 
 /* -------- timing helpers -------- */
 static inline double now_us(void) {
@@ -125,20 +126,23 @@ int main(int argc, char **argv)
 
         free(tc); free(tj); free(tt);
         /* synchronize all ranks before finalize */
-        extern int ucx_barrier(int root, int timeout_ms);
-        //(void)_keep_worker_sym; /* ensure symbol kept */
-        ucx_barrier(0, 30000);
-        leopar_finalize();
+        // extern int ucx_barrier(int root, int timeout_ms);
+        // //(void)_keep_worker_sym; /* ensure symbol kept */
+        // ucx_barrier(0, 30000);
         printf("[rank %d] done\n", my_rank);
+        leopar_finalize();
+
         return 0;
     } else {
         /* responder: do nothing except allow dispatcher to run */
         printf("[rank %d] responder: waiting for initiator, no local creates\n", my_rank);
-        extern int ucx_barrier(int root, int timeout_ms);
-        //(void)_keep_worker_sym;
-        ucx_barrier(0, 30000);
-        leopar_finalize();
+        // extern int ucx_barrier(int root, int timeout_ms);
+        // //(void)_keep_worker_sym;
+        // ucx_barrier(0, 30000);
+        sleep(20);
         printf("[rank %d] done\n", my_rank);
+        leopar_finalize();
+
         return 0;
     }
     //leopar_finalize();
