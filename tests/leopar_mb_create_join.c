@@ -24,7 +24,7 @@ static void print_stats(const char *name, double *x, int n) {
 }
 
 /* -------- empty worker -------- */
-static void* noop(void *arg) { (void)arg; return NULL; }
+void* noop(void *arg) { (void)arg; return NULL; }
 
 int main(int argc, char **argv)
 {
@@ -57,7 +57,7 @@ int main(int argc, char **argv)
         double *tc = (double*)malloc(sizeof(double)*iters);
         double *tj = (double*)malloc(sizeof(double)*iters);
         double *tt = (double*)malloc(sizeof(double)*iters);
-        
+
         /* warmup */
         for (int i=0;i<100;i++) {
             leo_thread_t t; leo_thread_create(&t, NULL, noop, NULL, target);
