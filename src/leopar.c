@@ -85,14 +85,15 @@ void leopar_finalize(void)
     /* 1. Destroy thread table. Ensure local threads have exited */
     threadtable_finalize();
 
-    /* 2. Finalize UCX layer */
+    /* 2. stop dispatcher */
+    dispatcher_stop();
+
+    /* 3. Finalize UCX layer */
     if (ucx_finalize(&g_ctx.ucx_ctx) != 0) {
         log_error("UCX finalize failed at rank=%d", g_ctx.rank);
     }
 
-    dispatcher_stop();
-
-    /* 3. Close log system */
+    /* 4. Close log system */
     log_info("LeoPar runtime finalized at rank %d", g_ctx.rank);
     log_finalize();
 }

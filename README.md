@@ -10,5 +10,6 @@ a parallel programming model runtime designed for distributed shared memory rese
 To install UCX (Unified Communication X) on Ubuntu/Debian, run the following command:
 
 ```bash
+sudo apt-get update
 sudo apt-get install -y libucx-dev 
-sudo apt install ucx-utils
+sudo apt install -y ucx-utils
