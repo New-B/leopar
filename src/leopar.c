@@ -16,6 +16,7 @@
 #include "ucx.h"
 #include "proto.h"
 #include "tid.h"
+#include "ctrl_min.h"
 
 #include <ucp/api/ucp.h>
 #include <stdlib.h>
@@ -53,26 +54,46 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
     }
 
     log_info("LeoPar runtime starting: rank=%d size=%d ip=%s", g_ctx.rank, g_ctx.world_size, g_ctx.tcp_cfg.ip_of_rank[rank]);
+
+    /* 3. Start control-plane (blocking TCP barrier, coordinator thread if rank==0) */
+    if (ctrlm_start() != 0) {
+        log_error("CTRLm start failed");
+        return -1;
+    }
+
+    /* 4. Synchronize all agents at early boot (before UCX)
+    This ensures every node has loaded config and started the control-plane. */
+    if (ctrlm_barrier("boot", /*gen*/0, /*timeout_ms*/0) != 0) {
+        log_warn("CTRLm barrier 'boot' timed out or failed; continuing may be unsafe");
+    /* You may choose to bail out here instead of continuing. */
+    }
     
-    /* 3. Initialize UCX runtime (worker + endpoints) */
+    /* 5. Initialize UCX runtime (worker + endpoints) */
     if (ucx_init(&g_ctx.ucx_ctx, &g_ctx.tcp_cfg, g_ctx.rank) != 0) {
         log_error("UCX init failed at rank=%d", g_ctx.rank);
         return -1;
     }
     log_info("UCX context+worker initialized");
 
-    /* 4. Initialize local dispatcher for remote requests */
+    /* 6. Initialize local dispatcher for remote requests */
     if (dispatcher_start() != 0) {
         log_error("dispatcher_start failed");
         return -1;
     }
 
-    /* 5. Initialize local thread table */
+    /* 7. Initialize local thread table */
     if (threadtable_init() != 0) {
         log_error("Thread table init failed for rank=%d", g_ctx.rank);
         return -1;
     }
     log_info("Thread table initialized (capacity=%d)", MAX_LOCAL_THREADS);
+
+    /* 8. Optional: synchronize after runtime is fully online
+       Only proceed when every node's UCX and dispatcher are ready. */
+    if (ctrlm_barrier("runtime_ready", /*gen*/1, /*timeout_ms*/0) != 0) {
+        log_warn("CTRLm barrier 'runtime_ready' failed; cluster readiness may be inconsistent");
+        /* Consider returning error here if you want strict semantics. */
+    }
 
     log_info("LeoPar runtime initialized successfully at rank %d", g_ctx.rank);
     return 0;
@@ -81,6 +102,14 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
 void leopar_finalize(void)
 {
     log_info("Finalizing LeoPar runtime (rank=%d)", g_ctx.rank);
+
+    /* A. Synchronize shutdown across agents.
+    The idea: you call finalize only after your application logic is done.
+    This barrier ensures all nodes reach this point before tearing down transports. */
+    if (ctrlm_barrier("shutdown", /*gen*/2, /*timeout_ms*/0) != 0) {
+        log_warn("CTRLm barrier 'shutdown' failed or timed out");
+        /* You can still proceed locally to avoid hanging forever. */
+    }
 
     /* 1. Destroy thread table. Ensure local threads have exited */
     threadtable_finalize();

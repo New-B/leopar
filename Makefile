@@ -50,6 +50,7 @@ HEADERS  := include/leopar.h \
             include/functable.h \
             include/threadtable.h \
             include/scheduler.h \
+            include/ctrl_min.h \
             include/log.h
 
 # ===== Runtime sources =====
@@ -64,6 +65,7 @@ SRCS     := $(SRC_DIR)/leopar.c \
             $(SRC_DIR)/scheduler.c \
             $(SRC_DIR)/sync.c \
             $(SRC_DIR)/query.c \
+            $(SRC_DIR)/ctrl_min.c \
             $(SRC_DIR)/log.c \
 #            $(SRC_DIR)/barrier.c
 #            $(SRC_DIR)/async.c \

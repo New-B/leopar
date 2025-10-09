@@ -18,12 +18,18 @@
 /* Maximum number of local threads per rank */
 #define MAX_LOCAL_THREADS 128
 
+typedef struct join_waiter {
+    uint32_t src_rank;
+    struct join_waiter* next;
+} join_waiter_t;
+
 /* Local thread table entry */
 typedef struct {
     pthread_t thread;           /* POSIX thread handle */
     int       in_use;        /* whether this slot is occupied */
     int       finished;      /* whether the thread finished */
-    pthread_mutex_t m;       /* mutex for finished state */
+    join_waiter_t *waiters; /* linked list of ranks waiting to join */
+    pthread_mutex_t mu;       /* mutex for finished state */
     pthread_cond_t  cv;      /* condvar for finished state */
     int       task_id;       /* registered function id */
     void     *arg_buf;       /* serialized arguments buffer */
@@ -32,6 +38,8 @@ typedef struct {
     uint64_t  gtid;          /* global thread id (owner<<32 | local) */
     int       creator_rank;  /* creator rank (for exit notify) */
 } local_thread_t;
+
+
 
 /* Global thread table */
 extern local_thread_t g_local_threads[MAX_LOCAL_THREADS];

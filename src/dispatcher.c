@@ -166,22 +166,50 @@ static void handle_join_req(const void *buf, size_t len, uint32_t src_rank)
     resp.gtid   = gtid;
     resp.done   = 0;
 
-    if (owner_rank == g_ctx.rank &&
-        local_tid >= 0 && local_tid < MAX_LOCAL_THREADS &&
-        g_local_threads[local_tid].in_use) {
-
-        /* 阻塞等待该本地线程结束（与 pthread_join 语义一致） */
-        pthread_join(g_local_threads[local_tid].thread, NULL);
-        g_local_threads[local_tid].in_use = 0;
-        g_local_threads[local_tid].finished = 1;
-        resp.done = 1;
-
-        log_info("JOIN_REQ handled: gtid=%" PRIu64 " joined", gtid);
-    } else {
-        log_warn("JOIN_REQ invalid or not owner: gtid=%" PRIu64, gtid);
+    if (owner_rank != g_ctx.rank || local_tid < 0 || local_tid >= MAX_LOCAL_THREADS) {
+        log_warn("JOIN_REQ invalid owner"); 
+        ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP); 
+        return;
     }
 
-    ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP);
+    local_thread_t* local_thread_entry = &g_local_threads[local_tid];
+    if (!atomic_load(&local_thread_entry->in_use)) {
+        resp.done = atomic_load(&local_thread_entry->finished) ? 1 : 1; // 已经没人占用，视为done
+        ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP);
+        return;
+    }
+
+    if (atomic_load(&local_thread_entry->finished)) {
+        resp.done = 1;
+        ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP);
+        return;
+    }
+
+    // 还未完成：登记等待者，**不阻塞 dispatcher**
+    join_waiter_t* w = malloc(sizeof(*w));
+    if (!w) { ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP); return; }
+    w->src_rank = src_rank; w->next = NULL;
+
+    pthread_mutex_lock(&local_thread_entry->mu);
+    w->next = local_thread_entry->waiters; local_thread_entry->waiters = w;
+    pthread_mutex_unlock(&local_thread_entry->mu);
+
+    // if (owner_rank == g_ctx.rank &&
+    //     local_tid >= 0 && local_tid < MAX_LOCAL_THREADS &&
+    //     g_local_threads[local_tid].in_use) {
+
+    //     /* 阻塞等待该本地线程结束（与 pthread_join 语义一致） */
+    //     pthread_join(g_local_threads[local_tid].thread, NULL);
+    //     g_local_threads[local_tid].in_use = 0;
+    //     g_local_threads[local_tid].finished = 1;
+    //     resp.done = 1;
+
+    //     log_info("JOIN_REQ handled: gtid=%" PRIu64 " joined", gtid);
+    // } else {
+    //     log_warn("JOIN_REQ invalid or not owner: gtid=%" PRIu64, gtid);
+    // }
+
+    // ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP);
 }
 
 /* ----------- 分发入口：根据 opcode 调用处理 ----------- */

@@ -59,7 +59,7 @@ int threadtable_alloc(void)
             g_local_threads[i].local_tid = i;
             g_local_threads[i].gtid = 0;
             g_local_threads[i].creator_rank = -1;
-            pthread_mutex_init(&g_local_threads[i].m, NULL);
+            pthread_mutex_init(&g_local_threads[i].mu, NULL);
             pthread_cond_init(&g_local_threads[i].cv, NULL);
             return i;
         }
