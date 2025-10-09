@@ -222,8 +222,8 @@ int ctrlm_start() {
     G.cfg.rank = g_ctx.rank;
     G.cfg.coordinator_rank = 0;                 /* change if you want a different coordinator */
     G.cfg.tcp  = &g_ctx.tcp_cfg;                /* reuse your already-loaded tcp_config_t */
-    //G.cfg.bind_ip = ip_of(G.cfg.rank);                       /* NULL => bind to INADDR_ANY ("0.0.0.0") */
-    G.cfg.bind_ip = NULL;
+    G.cfg.bind_ip = ip_of(G.cfg.rank);                       /* NULL => bind to INADDR_ANY ("0.0.0.0") */
+    //G.cfg.bind_ip = NULL;
 
     if (!G.cfg.tcp) {
         log_error("CTRLm: tcp_config_t pointer is NULL");
