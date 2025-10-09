@@ -263,7 +263,7 @@ int ctrlm_start() {
     if (G.cfg.rank == G.cfg.coordinator_rank) {
         /* create listen socket */
         int fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) { llog_error("CTRLm: socket() failed: errno=%d (%s)", errno, strerror(errno)); return -1; }
+        if (fd < 0) { log_error("CTRLm: socket() failed: errno=%d (%s)", errno, strerror(errno)); return -1; }
         if (set_reuseaddr(fd) != 0) { log_warn("CTRLm: set_reuseaddr failed"); close(fd); return -1; }
 
         struct sockaddr_in addr; memset(&addr, 0, sizeof(addr));
@@ -478,7 +478,7 @@ int ctrlm_barrier(const char* name, uint64_t gen, uint32_t timeout_ms) {
                 rc = pthread_cond_timedwait(&s->cv, &s->mu, &ts);
             }
             int after = s->arrived_cnt;
-            
+
             if (!s->released) {
                 pthread_mutex_unlock(&s->mu);
                 log_warn("CTRLm: barrier(name=%s, gen=%" PRIu64 ") coordinator timeout (arrived %d->%d / %d)",
