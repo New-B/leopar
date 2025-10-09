@@ -167,6 +167,21 @@ static void* server_main(void* arg) {
             continue;
         }
 
+        /* Log remote & local addresses for this accepted socket */
+        char rip[INET_ADDRSTRLEN] = "?", lip[INET_ADDRSTRLEN] = "?";
+        uint16_t rport = 0, lport = 0;
+        if (cli.sin_family == AF_INET) {
+            inet_ntop(AF_INET, &cli.sin_addr, rip, sizeof(rip));
+            rport = ntohs(cli.sin_port);
+        }
+        struct sockaddr_in laddr; socklen_t llen = sizeof(laddr);
+        if (getsockname(cfd, (struct sockaddr*)&laddr, &llen) == 0 && laddr.sin_family == AF_INET) {
+            inet_ntop(AF_INET, &laddr.sin_addr, lip, sizeof(lip));
+            lport = ntohs(laddr.sin_port);
+        }
+        log_debug("CTRLm: accepted cfd=%d remote=%s:%u local=%s:%u",
+                  cfd, rip, (unsigned)rport, lip, (unsigned)lport);
+
         arrive_hdr_t h;
         ssize_t n = recv(cfd, &h, sizeof(h), MSG_WAITALL);
         if (n != (ssize_t)sizeof(h)) {
@@ -179,6 +194,7 @@ static void* server_main(void* arg) {
             close(cfd);
             continue;
         }
+
         char name[64] = {0};
         if (h.name_len) {
             n = recv(cfd, name, h.name_len, MSG_WAITALL);
@@ -189,6 +205,8 @@ static void* server_main(void* arg) {
             }
             name[h.name_len] = '\0';
         }
+        log_debug("CTRLm: ARRIVE header parsed: name=%s gen=%" PRIu64 " from rank=%u",
+            name, h.gen, h.src_rank);
 
         bstate_t* s = bstate_get_or_create(name, h.gen);
         if (!s) { log_error("CTRLm: OOM state"); close(cfd); continue; }
@@ -202,11 +220,15 @@ static void* server_main(void* arg) {
             log_debug("CTRLm: ARRIVE name=%s gen=%" PRIu64 " from rank=%u (%d/%d)",
                     s->name, s->gen, h.src_rank, s->arrived_cnt, s->expected);
         } else {
+            log_warn("CTRLm: duplicate ARRIVE ignored: name=%s gen=%" PRIu64 " from rank=%u",
+                s->name, s->gen, h.src_rank);
             /* duplicate arrive: close socket immediately */
             close(cfd);
         }
 
         if (s->arrived_cnt >= s->expected) {
+            log_info("CTRLm: threshold reached for name=%s gen=%" PRIu64 " -> RELEASE",
+                s->name, s->gen);
             bstate_release(s);
         }
         pthread_mutex_unlock(&s->mu);
@@ -234,29 +256,46 @@ int ctrlm_start() {
     G.listen_fd = -1;
     atomic_store(&G.running, 1);
 
+    log_info("CTRLm: init config rank=%d coord=%d world=%d ctrl_port=%d bind_ip=%s",
+        G.cfg.rank, G.cfg.coordinator_rank, world_size(),
+        ctrl_port(), G.cfg.bind_ip ? G.cfg.bind_ip : "0.0.0.0");
+
     if (G.cfg.rank == G.cfg.coordinator_rank) {
         /* create listen socket */
         int fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) { log_error("CTRLm: socket() failed"); return -1; }
-        if (set_reuseaddr(fd) != 0) { close(fd); return -1; }
+        if (fd < 0) { llog_error("CTRLm: socket() failed: errno=%d (%s)", errno, strerror(errno)); return -1; }
+        if (set_reuseaddr(fd) != 0) { log_warn("CTRLm: set_reuseaddr failed"); close(fd); return -1; }
 
         struct sockaddr_in addr; memset(&addr, 0, sizeof(addr));
         addr.sin_family = AF_INET;
         addr.sin_port   = htons((uint16_t)ctrl_port());
         if (G.cfg.bind_ip && strcmp(G.cfg.bind_ip, "0.0.0.0") != 0) {
             if (inet_pton(AF_INET, G.cfg.bind_ip, &addr.sin_addr) != 1) {
-                log_error("CTRLm: invalid bind_ip");
+                log_error("CTRLm: invalid bind_ip=%s (inet_pton failed)", G.cfg.bind_ip);
                 close(fd); return -1;
             }
         } else {
             addr.sin_addr.s_addr = htonl(INADDR_ANY);
         }
         if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-            log_error("CTRLm: bind failed: %s", strerror(errno));
-            close(fd); return -1;
+            int e = errno;
+            log_error("CTRLm: bind(%s:%d) failed: errno=%d (%s)",
+                      G.cfg.bind_ip ? G.cfg.bind_ip : "0.0.0.0", ctrl_port(), e, strerror(e));
+            /* Optional fallback if bind_ip is not a local NIC */
+            if (e == EADDRNOTAVAIL && G.cfg.bind_ip) {
+                log_warn("CTRLm: falling back to INADDR_ANY for control-plane bind");
+                addr.sin_addr.s_addr = htonl(INADDR_ANY);
+                if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+                    log_error("CTRLm: bind(0.0.0.0:%d) still failed: errno=%d (%s)",
+                              ctrl_port(), errno, strerror(errno));
+                    close(fd); return -1;
+                }
+            } else {
+                close(fd); return -1;
+            }
         }
         if (listen(fd, 128) != 0) {
-            log_error("CTRLm: listen failed: %s", strerror(errno));
+            log_error("CTRLm: listen failed: errno=%d (%s)", errno, strerror(errno));
             close(fd); return -1;
         }
         /* non-blocking accept helps shutdown responsiveness */
@@ -268,6 +307,10 @@ int ctrlm_start() {
             log_error("CTRLm: failed to start server thread (rc=%d)", rc);
             close(fd); G.listen_fd = -1; return -1;
         }
+    } else {
+        /* non-coordinator: nothing to do until barrier() */
+        log_debug("CTRLm: non-coordinator rank=%d waiting for barriers...", G.cfg.rank);
+        sleep(1);
     }
     log_info("CTRLm: started (rank=%d, world=%d, coord=%d, port=%d)",
              G.cfg.rank, world_size(), G.cfg.coordinator_rank, ctrl_port());
@@ -312,16 +355,23 @@ static int barrier_client_wait(const char* host, int port,
                             int src_rank)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) { log_error("CTRLm: socket() fail"); return -1; }
+    if (fd < 0) { log_error("CTRLm: socket() fail: errno=%d (%s)", errno, strerror(errno)); return -1; }
     set_timeouts(fd, timeout_ms);
 
     struct sockaddr_in a; memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET; a.sin_port = htons((uint16_t)port);
     if (inet_pton(AF_INET, host, &a.sin_addr) != 1) {
         struct hostent* he = gethostbyname(host);
-        if (!he || !he->h_addr_list || !he->h_addr_list[0]) { close(fd); return -1; }
+        if (!he || !he->h_addr_list || !he->h_addr_list[0]) { 
+            log_error("CTRLm: host resolve failed for %s", host);
+            close(fd); return -1; 
+        }
         memcpy(&a.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
     }
+    char dip[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &a.sin_addr, dip, sizeof(dip));
+    log_info("CTRLm: dialing coordinator %s:%d for barrier(name=%s, gen=%" PRIu64 ", from rank=%d, to=%ums)",
+             dip, port, name, gen, src_rank, (unsigned)timeout_ms);
+
     if (connect(fd, (struct sockaddr*)&a, sizeof(a)) != 0) {
         log_warn("CTRLm: connect(%s:%d) fail: %s", host, port, strerror(errno));
         close(fd); return -1;
@@ -333,15 +383,40 @@ static int barrier_client_wait(const char* host, int port,
     h.src_rank = (uint32_t)src_rank;
     h.gen = gen;
 
-    if (send(fd, &h, sizeof(h), MSG_NOSIGNAL) != (ssize_t)sizeof(h)) { close(fd); return -1; }
+    ssize_t n1 = send(fd, &h, sizeof(h), MSG_NOSIGNAL);
+    if (n1 != (ssize_t)sizeof(h)) {
+        int e = errno;
+        log_warn("CTRLm: send header failed n=%zd (errno=%d %s)", n1, e, strerror(e));
+        close(fd); return -1;
+    }
     if (h.name_len) {
-        if (send(fd, name, h.name_len, MSG_NOSIGNAL) != (ssize_t)h.name_len) { close(fd); return -1; }
+        ssize_t n2 = send(fd, name, h.name_len, MSG_NOSIGNAL);
+        if (n2 != (ssize_t)h.name_len) {
+            int e = errno;
+            log_warn("CTRLm: send name failed n=%zd (<%u) (errno=%d %s)",
+                     n2, h.name_len, e, strerror(e));
+            close(fd); return -1;
+        }
     }
 
     /* wait for single-byte RELEASE */
     char R;
     ssize_t n = recv(fd, &R, 1, 0);
+    int e = (n < 0 ? errno : 0);
     int ok = (n == 1 && R == 'R') ? 0 : -1;
+
+    if (ok == 0) {
+        log_info("CTRLm: RELEASE received for barrier(name=%s, gen=%" PRIu64 ")", name, gen);
+    } else {
+        if (n == 0) {
+            log_warn("CTRLm: RELEASE recv: peer closed (name=%s gen=%" PRIu64 ")", name, gen);
+        } else if (n < 0) {
+            log_warn("CTRLm: RELEASE recv failed: errno=%d (%s) (name=%s gen=%" PRIu64 ")",
+                     e, strerror(e), name, gen);
+        } else {
+            log_warn("CTRLm: RELEASE recv: unexpected byte=0x%02x (n=%zd)", (unsigned char)R, n);
+        }
+    }
     close(fd);
     return ok;
 }
@@ -350,11 +425,17 @@ int ctrlm_barrier(const char* name, uint64_t gen, uint32_t timeout_ms) {
     if (!name || !*name) return -1;
     if (timeout_ms == 0) timeout_ms = 60000;
 
+    log_info("CTRLm: barrier enter name=%s gen=%" PRIu64 " role=%s timeout=%ums",
+        name, gen,
+        (G.cfg.rank == G.cfg.coordinator_rank ? "coordinator" : "client"),
+        (unsigned)timeout_ms);
+
     if (G.cfg.rank != G.cfg.coordinator_rank) {
         const char* host = ip_of(G.cfg.coordinator_rank);
-        if (!host || !*host) { log_error("CTRLm: coordinator IP not found"); return -1; }
-        int rc = barrier_client_wait(host, ctrl_port(), name, gen, timeout_ms,
-                                     G.cfg.rank);
+        if (!host || !*host) { 
+            log_error("CTRLm: coordinator IP not found (rank=%d)", G.cfg.coordinator_rank); return -1; 
+        }
+        int rc = barrier_client_wait(host, ctrl_port(), name, gen, timeout_ms, G.cfg.rank);
         if (rc != 0) {
             log_warn("CTRLm: barrier(name=%s, gen=%" PRIu64 ") client timeout/fail", name, gen);
             return rc;
@@ -365,7 +446,7 @@ int ctrlm_barrier(const char* name, uint64_t gen, uint32_t timeout_ms) {
 
     /* coordinator counts itself and waits on state cv until release() */
     bstate_t* s = bstate_get_or_create(name, gen);
-    if (!s) return -1;
+    if (!s) { log_error("CTRLm: OOM state for barrier name=%s gen=%" PRIu64, name, gen); return -1; }
 
     pthread_mutex_lock(&s->mu);
     if (!s->released) {
@@ -374,8 +455,13 @@ int ctrlm_barrier(const char* name, uint64_t gen, uint32_t timeout_ms) {
             s->arrived_cnt++;
             log_debug("CTRLm: ARRIVE (self) name=%s gen=%" PRIu64 " (%d/%d)",
                     s->name, s->gen, s->arrived_cnt, s->expected);
+        } else {
+            log_debug("CTRLm: ARRIVE (self) duplicate ignored for name=%s gen=%" PRIu64, s->name, s->gen);
         }
+
         if (s->arrived_cnt >= s->expected) {
+            log_info("CTRLm: threshold reached (self-only?) name=%s gen=%" PRIu64 " -> RELEASE",
+                     s->name, s->gen);
             bstate_release(s);
         }
         if (!s->released) {
@@ -387,12 +473,16 @@ int ctrlm_barrier(const char* name, uint64_t gen, uint32_t timeout_ms) {
             if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
 
             int rc = 0;
+            int before = s->arrived_cnt;
             while (!s->released && rc == 0) {
                 rc = pthread_cond_timedwait(&s->cv, &s->mu, &ts);
             }
+            int after = s->arrived_cnt;
+            
             if (!s->released) {
                 pthread_mutex_unlock(&s->mu);
-                log_warn("CTRLm: barrier(name=%s, gen=%" PRIu64 ") coordinator timeout", name, gen);
+                log_warn("CTRLm: barrier(name=%s, gen=%" PRIu64 ") coordinator timeout (arrived %d->%d / %d)",
+                         name, gen, before, after, s->expected);
                 return ETIMEDOUT;
             }
         }
