@@ -595,6 +595,13 @@ int tcp_allgather_ucx_addrs(const struct tcp_config_t *cfg,
         for (int i = 0; i < world_size; ++i) peer_cfd[i] = -1;
         got[0] = 1;
 
+        // global barrier to avoid connection race on rank0 listen port
+        if (ctrlm_barrier("ucx_tcp_listen_ready", /*gen*/1, /*timeout_ms*/0) != 0) {
+            log_error("Barrier 'ucx_tcp_listen_ready' failed");
+            return -1;
+        }
+
+
         int gathered = 1;
         while (gathered < world_size) {
             struct sockaddr_in cli; socklen_t clilen = sizeof(cli);
@@ -666,6 +673,12 @@ int tcp_allgather_ucx_addrs(const struct tcp_config_t *cfg,
         tcp_close_fd(listen_fd);
         free(peer_cfd); free(got);
     } else {
+        // global barrier to avoid connection race in non-zero ranks
+        if (ctrlm_barrier("ucx_tcp_listen_ready", /*gen*/1, /*timeout_ms*/0) != 0) {
+            log_error("Barrier 'ucx_tcp_listen_ready' failed");
+            return -1;
+        }
+
         /* 非0 rank：连 base_port，提交地址后在同一连接上等待表 */
         const char *ip0 = cfg->ip_of_rank[0];
         int cfd = -1;
