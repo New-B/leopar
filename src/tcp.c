@@ -8,6 +8,7 @@
 #include "tcp.h"
 #include "context.h"   /* for g_ctx and tcp_config_t */
 #include "log.h"
+#include "ctrl_min.h"
 
 #include <sys/socket.h>
 #include <sys/types.h>
