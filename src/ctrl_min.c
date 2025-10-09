@@ -65,6 +65,7 @@ typedef struct bstate_s {
 static struct {
     ctrlm_cfg_t cfg;
     _Atomic int running;
+    _Atomic int srv_ready;   // <-- NEW: server is ready to accept
     int listen_fd;
     pthread_t srv_th;
 
@@ -153,8 +154,9 @@ static void bstate_release(bstate_t* s) {
 /* ---- Coordinator server thread ---- */
 static void* server_main(void* arg) {
     (void)arg;
+    atomic_store(&G.srv_ready, 1);  // mark ready as early as possible
     log_info("CTRLm: server started on %s:%d (coord rank=%d)",
-        G.cfg.bind_ip ? G.cfg.bind_ip : "0.0.0.0", ctrl_port(), G.cfg.coordinator_rank);
+             G.cfg.bind_ip ? G.cfg.bind_ip : "0.0.0.0", ctrl_port(), G.cfg.coordinator_rank);
 
     while (atomic_load(&G.running)) {
         struct sockaddr_in cli; socklen_t sl = sizeof(cli);
@@ -336,6 +338,14 @@ int ctrlm_start() {
             log_error("CTRLm: failed to start server thread (rc=%d)", rc);
             close(fd); G.listen_fd = -1; return -1;
         }
+        /* Wait until server thread marks itself ready (max ~1s) */
+        for (int i = 0; i < 100; ++i) {
+            if (atomic_load(&G.srv_ready)) break;
+            usleep(10000); // 10 ms
+        }
+        if (!atomic_load(&G.srv_ready)) {
+            log_warn("CTRLm: server thread not marked ready yet; proceeding anyway");
+        }
     } else {
         /* non-coordinator: nothing to do until barrier() */
         log_debug("CTRLm: non-coordinator rank=%d waiting for barriers...", G.cfg.rank);
@@ -378,95 +388,211 @@ void ctrlm_stop(void) {
     log_info("CTRLm: stopped");
 }
 
-/* Non-coordinator connects, sends ARRIVE, waits for single-byte RELEASE. */
+/* Robust client: retry connect+ACK a few times before giving up, then wait for RELEASE. */
 static int barrier_client_wait(const char* host, int port,
-                            const char* name, uint64_t gen, uint32_t timeout_ms,
-                            int src_rank)
+                               const char* name, uint64_t gen, uint32_t timeout_ms,
+                               int src_rank)
 {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) { log_error("CTRLm: socket() fail: errno=%d (%s)", errno, strerror(errno)); return -1; }
-    set_timeouts(fd, timeout_ms);
+    if (timeout_ms == 0) timeout_ms = 60000;
+
+    /* pull retry knobs from tcp config, with sane fallbacks */
+    int retry_max = (G.cfg.tcp && G.cfg.tcp->retry_max > 0) ? G.cfg.tcp->retry_max : 10;
+    uint32_t per_try_ms = (G.cfg.tcp && G.cfg.tcp->connect_timeout_ms > 0)
+                            ? (uint32_t)G.cfg.tcp->connect_timeout_ms : 3000;
 
     struct sockaddr_in a; memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET; a.sin_port = htons((uint16_t)port);
     if (inet_pton(AF_INET, host, &a.sin_addr) != 1) {
         struct hostent* he = gethostbyname(host);
-        if (!he || !he->h_addr_list || !he->h_addr_list[0]) { 
+        if (!he || !he->h_addr_list || !he->h_addr_list[0]) {
             log_error("CTRLm: host resolve failed for %s", host);
-            close(fd); return -1; 
+            return -1;
         }
         memcpy(&a.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
     }
     char dip[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &a.sin_addr, dip, sizeof(dip));
-    log_info("CTRLm: dialing coordinator %s:%d for barrier(name=%s, gen=%" PRIu64 ", from rank=%d, to=%ums)",
-             dip, port, name, gen, src_rank, (unsigned)timeout_ms);
 
-    if (connect(fd, (struct sockaddr*)&a, sizeof(a)) != 0) {
-        log_warn("CTRLm: connect(%s:%d) fail: %s", host, port, strerror(errno));
-        close(fd); return -1;
-    }
+    int fd = -1;
+    int attempt = 0;
 
-    arrive_hdr_t h;
-    h.magic = MAGIC_LEOB; h.op = OP_ARRIVE;
-    h.name_len = (uint32_t)strnlen(name, 63);
-    h.src_rank = (uint32_t)src_rank;
-    h.gen = gen;
+    /* Phase-0: connect + send header + wait ACK ('A') with retries */
+    for (attempt = 1; attempt <= retry_max; ++attempt) {
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) { usleep(1000 * 50); continue; }
+        set_timeouts(fd, per_try_ms);
 
-    ssize_t n1 = send(fd, &h, sizeof(h), MSG_NOSIGNAL);
-    if (n1 != (ssize_t)sizeof(h)) {
-        int e = errno;
-        log_warn("CTRLm: send header failed n=%zd (errno=%d %s)", n1, e, strerror(e));
-        close(fd); return -1;
-    }
-    if (h.name_len) {
-        ssize_t n2 = send(fd, name, h.name_len, MSG_NOSIGNAL);
-        if (n2 != (ssize_t)h.name_len) {
+        log_info("CTRLm: dialing attempt %d/%d -> %s:%d for barrier(name=%s, gen=%" PRIu64 ", from rank=%d)",
+                 attempt, retry_max, dip, port, name, gen, src_rank);
+
+        if (connect(fd, (struct sockaddr*)&a, sizeof(a)) != 0) {
             int e = errno;
-            log_warn("CTRLm: send name failed n=%zd (<%u) (errno=%d %s)",
-                     n2, h.name_len, e, strerror(e));
-            close(fd); return -1;
+            log_warn("CTRLm: connect(%s:%d) failed: errno=%d (%s)", dip, port, e, strerror(e));
+            close(fd); fd = -1;
+            if (attempt < retry_max) usleep(1000 * 100); /* 100ms backoff */
+            continue;
         }
-    }
 
-    /* Phase-1: expect 1-byte ACK 'A' promptly */
-    char A;
-    ssize_t nA = recv(fd, &A, 1, 0);
-    if (nA == 1 && A == 'A') {
-        log_info("CTRLm: ACK received for barrier(name=%s, gen=%" PRIu64 ")", name, gen);
-    } else {
-        if (nA == 0) {
-            log_warn("CTRLm: ACK recv: peer closed (name=%s gen=%" PRIu64 ")", name, gen);
+        /* send ARRIVE header+name */
+        arrive_hdr_t h;
+        h.magic = MAGIC_LEOB; h.op = OP_ARRIVE;
+        h.name_len = (uint32_t)strnlen(name, 63);
+        h.src_rank = (uint32_t)src_rank;
+        h.gen      = gen;
+
+        ssize_t n1 = send(fd, &h, sizeof(h), MSG_NOSIGNAL);
+        if (n1 != (ssize_t)sizeof(h)) {
+            int e = errno;
+            log_warn("CTRLm: send header failed n=%zd (errno=%d %s)", n1, e, strerror(e));
+            close(fd); fd = -1;
+            if (attempt < retry_max) usleep(1000 * 100);
+            continue;
+        }
+        if (h.name_len) {
+            ssize_t n2 = send(fd, name, h.name_len, MSG_NOSIGNAL);
+            if (n2 != (ssize_t)h.name_len) {
+                int e = errno;
+                log_warn("CTRLm: send name failed n=%zd (<%u) (errno=%d %s)",
+                         n2, h.name_len, e, strerror(e));
+                close(fd); fd = -1;
+                if (attempt < retry_max) usleep(1000 * 100);
+                continue;
+            }
+        }
+
+        /* wait ACK 'A' */
+        char A;
+        ssize_t nA = recv(fd, &A, 1, 0);
+        if (nA == 1 && A == 'A') {
+            log_info("CTRLm: ACK received for barrier(name=%s, gen=%" PRIu64 ")", name, gen);
+            break;  /* success Phase-0, keep fd to wait RELEASE */
         } else {
-            int e = errno;
-            log_warn("CTRLm: ACK recv failed: n=%zd errno=%d (%s) (name=%s gen=%" PRIu64 ")",
-                    nA, e, strerror(e), name, gen);
+            if (nA == 0) {
+                log_warn("CTRLm: ACK recv: peer closed (name=%s gen=%" PRIu64 ")", name, gen);
+            } else {
+                int e = errno;
+                log_warn("CTRLm: ACK recv failed: n=%zd errno=%d (%s) (name=%s gen=%" PRIu64 ")",
+                         nA, e, strerror(e), name, gen);
+            }
+            close(fd); fd = -1;
+            if (attempt < retry_max) usleep(1000 * 100);
+            continue;
         }
-        close(fd);
+    }
+
+    if (fd < 0) {
+        log_warn("CTRLm: connect+ACK failed after %d attempts for barrier(name=%s, gen=%" PRIu64 ")",
+                 retry_max, name, gen);
         return -1;
     }
 
-    /* Phase-2: wait for final RELEASE 'R' (may block until all arrived) */
-    /* wait for single-byte RELEASE */
+    /* Phase-1: wait final RELEASE 'R' (may block until all arrived) */
+    /* Use the remaining overall timeout if你想要更精细，这里简单用 socket recv 超时 */
     char R;
-    ssize_t n = recv(fd, &R, 1, 0);
-    int e = (n < 0 ? errno : 0);
-    int ok = (n == 1 && R == 'R') ? 0 : -1;
+    ssize_t nR = recv(fd, &R, 1, 0);
+    int ok = (nR == 1 && R == 'R') ? 0 : -1;
 
     if (ok == 0) {
         log_info("CTRLm: RELEASE received for barrier(name=%s, gen=%" PRIu64 ")", name, gen);
     } else {
-        if (n == 0) {
+        if (nR == 0) {
             log_warn("CTRLm: RELEASE recv: peer closed (name=%s gen=%" PRIu64 ")", name, gen);
-        } else if (n < 0) {
-            log_warn("CTRLm: RELEASE recv failed: errno=%d (%s) (name=%s gen=%" PRIu64 ")",
-                     e, strerror(e), name, gen);
         } else {
-            log_warn("CTRLm: RELEASE recv: unexpected byte=0x%02x (n=%zd)", (unsigned char)R, n);
+            log_warn("CTRLm: RELEASE recv failed or unexpected (n=%zd)", nR);
         }
     }
     close(fd);
     return ok;
 }
+
+// /* Non-coordinator connects, sends ARRIVE, waits for single-byte RELEASE. */
+// static int barrier_client_wait(const char* host, int port,
+//                             const char* name, uint64_t gen, uint32_t timeout_ms,
+//                             int src_rank)
+// {
+//     int fd = socket(AF_INET, SOCK_STREAM, 0);
+//     if (fd < 0) { log_error("CTRLm: socket() fail: errno=%d (%s)", errno, strerror(errno)); return -1; }
+//     set_timeouts(fd, timeout_ms);
+
+//     struct sockaddr_in a; memset(&a, 0, sizeof(a));
+//     a.sin_family = AF_INET; a.sin_port = htons((uint16_t)port);
+//     if (inet_pton(AF_INET, host, &a.sin_addr) != 1) {
+//         struct hostent* he = gethostbyname(host);
+//         if (!he || !he->h_addr_list || !he->h_addr_list[0]) { 
+//             log_error("CTRLm: host resolve failed for %s", host);
+//             close(fd); return -1; 
+//         }
+//         memcpy(&a.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
+//     }
+//     char dip[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &a.sin_addr, dip, sizeof(dip));
+//     log_info("CTRLm: dialing coordinator %s:%d for barrier(name=%s, gen=%" PRIu64 ", from rank=%d, to=%ums)",
+//              dip, port, name, gen, src_rank, (unsigned)timeout_ms);
+
+//     if (connect(fd, (struct sockaddr*)&a, sizeof(a)) != 0) {
+//         log_warn("CTRLm: connect(%s:%d) fail: %s", host, port, strerror(errno));
+//         close(fd); return -1;
+//     }
+
+//     arrive_hdr_t h;
+//     h.magic = MAGIC_LEOB; h.op = OP_ARRIVE;
+//     h.name_len = (uint32_t)strnlen(name, 63);
+//     h.src_rank = (uint32_t)src_rank;
+//     h.gen = gen;
+
+//     ssize_t n1 = send(fd, &h, sizeof(h), MSG_NOSIGNAL);
+//     if (n1 != (ssize_t)sizeof(h)) {
+//         int e = errno;
+//         log_warn("CTRLm: send header failed n=%zd (errno=%d %s)", n1, e, strerror(e));
+//         close(fd); return -1;
+//     }
+//     if (h.name_len) {
+//         ssize_t n2 = send(fd, name, h.name_len, MSG_NOSIGNAL);
+//         if (n2 != (ssize_t)h.name_len) {
+//             int e = errno;
+//             log_warn("CTRLm: send name failed n=%zd (<%u) (errno=%d %s)",
+//                      n2, h.name_len, e, strerror(e));
+//             close(fd); return -1;
+//         }
+//     }
+
+//     /* Phase-1: expect 1-byte ACK 'A' promptly */
+//     char A;
+//     ssize_t nA = recv(fd, &A, 1, 0);
+//     if (nA == 1 && A == 'A') {
+//         log_info("CTRLm: ACK received for barrier(name=%s, gen=%" PRIu64 ")", name, gen);
+//     } else {
+//         if (nA == 0) {
+//             log_warn("CTRLm: ACK recv: peer closed (name=%s gen=%" PRIu64 ")", name, gen);
+//         } else {
+//             int e = errno;
+//             log_warn("CTRLm: ACK recv failed: n=%zd errno=%d (%s) (name=%s gen=%" PRIu64 ")",
+//                     nA, e, strerror(e), name, gen);
+//         }
+//         close(fd);
+//         return -1;
+//     }
+
+//     /* Phase-2: wait for final RELEASE 'R' (may block until all arrived) */
+//     /* wait for single-byte RELEASE */
+//     char R;
+//     ssize_t n = recv(fd, &R, 1, 0);
+//     int e = (n < 0 ? errno : 0);
+//     int ok = (n == 1 && R == 'R') ? 0 : -1;
+
+//     if (ok == 0) {
+//         log_info("CTRLm: RELEASE received for barrier(name=%s, gen=%" PRIu64 ")", name, gen);
+//     } else {
+//         if (n == 0) {
+//             log_warn("CTRLm: RELEASE recv: peer closed (name=%s gen=%" PRIu64 ")", name, gen);
+//         } else if (n < 0) {
+//             log_warn("CTRLm: RELEASE recv failed: errno=%d (%s) (name=%s gen=%" PRIu64 ")",
+//                      e, strerror(e), name, gen);
+//         } else {
+//             log_warn("CTRLm: RELEASE recv: unexpected byte=0x%02x (n=%zd)", (unsigned char)R, n);
+//         }
+//     }
+//     close(fd);
+//     return ok;
+// }
 
 int ctrlm_barrier(const char* name, uint64_t gen, uint32_t timeout_ms) {
     if (!name || !*name) return -1;
