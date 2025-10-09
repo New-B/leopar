@@ -219,6 +219,35 @@ static void* server_main(void* arg) {
             if (w) { w->fd = cfd; w->next = s->fds; s->fds = w; }
             log_debug("CTRLm: ARRIVE name=%s gen=%" PRIu64 " from rank=%u (%d/%d)",
                     s->name, s->gen, h.src_rank, s->arrived_cnt, s->expected);
+            
+            /* inside server_main, after we linked w->fd into s->fds and logged ARRIVE */
+            {
+                char A = 'A';
+                ssize_t sn = send(cfd, &A, 1, MSG_NOSIGNAL);
+                if (sn != 1) {
+                    int e = errno;
+                    log_warn("CTRLm: send ACK failed to rank=%u (errno=%d %s), closing cfd=%d",
+                            h.src_rank, e, strerror(e), cfd);
+                    /* We will close this cfd NOW; it will not receive RELEASE.
+                    We keep arrived_cnt as-is to avoid underflow races. */
+                    /* remove cfd from s->fds list to avoid double close on release */
+                    wait_fd_t** pp = &s->fds;
+                    while (*pp) {
+                        if ((*pp)->fd == cfd) {
+                            wait_fd_t* dead = *pp;
+                            *pp = (*pp)->next;
+                            free(dead);
+                            break;
+                        }
+                        pp = &((*pp)->next);
+                    }
+                    close(cfd);
+                } else {
+                    log_debug("CTRLm: ACK sent to rank=%u for name=%s gen=%" PRIu64,
+                            h.src_rank, s->name, s->gen);
+                }
+            }
+                
         } else {
             log_warn("CTRLm: duplicate ARRIVE ignored: name=%s gen=%" PRIu64 " from rank=%u",
                 s->name, s->gen, h.src_rank);
@@ -283,7 +312,7 @@ int ctrlm_start() {
                       G.cfg.bind_ip ? G.cfg.bind_ip : "0.0.0.0", ctrl_port(), e, strerror(e));
             /* Optional fallback if bind_ip is not a local NIC */
             if (e == EADDRNOTAVAIL && G.cfg.bind_ip) {
-                log_warn("CTRLm: falling back to INADDR_ANY for control-plane bind");
+                log_warn("CTRLm: falling back to INADDR_ANY (0.0.0.0:%d)", ctrl_port());
                 addr.sin_addr.s_addr = htonl(INADDR_ANY);
                 if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
                     log_error("CTRLm: bind(0.0.0.0:%d) still failed: errno=%d (%s)",
@@ -399,6 +428,24 @@ static int barrier_client_wait(const char* host, int port,
         }
     }
 
+    /* Phase-1: expect 1-byte ACK 'A' promptly */
+    char A;
+    ssize_t nA = recv(fd, &A, 1, 0);
+    if (nA == 1 && A == 'A') {
+        log_info("CTRLm: ACK received for barrier(name=%s, gen=%" PRIu64 ")", name, gen);
+    } else {
+        if (nA == 0) {
+            log_warn("CTRLm: ACK recv: peer closed (name=%s gen=%" PRIu64 ")", name, gen);
+        } else {
+            int e = errno;
+            log_warn("CTRLm: ACK recv failed: n=%zd errno=%d (%s) (name=%s gen=%" PRIu64 ")",
+                    nA, e, strerror(e), name, gen);
+        }
+        close(fd);
+        return -1;
+    }
+
+    /* Phase-2: wait for final RELEASE 'R' (may block until all arrived) */
     /* wait for single-byte RELEASE */
     char R;
     ssize_t n = recv(fd, &R, 1, 0);
