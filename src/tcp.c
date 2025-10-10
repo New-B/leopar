@@ -8,7 +8,7 @@
 #include "tcp.h"
 #include "context.h"   /* for g_ctx and tcp_config_t */
 #include "log.h"
-#include "ctrl_min.h"
+#include "ctrl.h"
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -597,7 +597,7 @@ int tcp_allgather_ucx_addrs(const struct tcp_config_t *cfg,
         got[0] = 1;
 
         // global barrier to avoid connection race on rank0 listen port
-        if (ctrlm_barrier("ucx_tcp_listen_ready", /*gen*/1, /*timeout_ms*/0) != 0) {
+        if (ctrl_barrier("ucx_tcp_listen_ready", /*gen*/1, /*timeout_ms*/0) != 0) {
             log_error("Barrier 'ucx_tcp_listen_ready' failed");
             return -1;
         }
@@ -675,7 +675,7 @@ int tcp_allgather_ucx_addrs(const struct tcp_config_t *cfg,
         free(peer_cfd); free(got);
     } else {
         // global barrier to avoid connection race in non-zero ranks
-        if (ctrlm_barrier("ucx_tcp_listen_ready", /*gen*/1, /*timeout_ms*/0) != 0) {
+        if (ctrl_barrier("ucx_tcp_listen_ready", /*gen*/1, /*timeout_ms*/0) != 0) {
             log_error("Barrier 'ucx_tcp_listen_ready' failed");
             return -1;
         }

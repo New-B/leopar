@@ -16,7 +16,7 @@
 #include "ucx.h"
 #include "proto.h"
 #include "tid.h"
-#include "ctrl_min.h"
+#include "ctrl.h"
 
 #include <ucp/api/ucp.h>
 #include <stdlib.h>
@@ -56,14 +56,14 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
     log_info("LeoPar runtime starting: rank=%d size=%d ip=%s", g_ctx.rank, g_ctx.world_size, g_ctx.tcp_cfg.ip_of_rank[rank]);
 
     /* 3. Start control-plane (blocking TCP barrier, coordinator thread if rank==0) */
-    if (ctrlm_start() != 0) {
+    if (ctrl_start() != 0) {
         log_error("CTRLm start failed");
         return -1;
     }
 
     /* 4. Synchronize all agents at early boot (before UCX)
     This ensures every node has loaded config and started the control-plane. */
-    if (ctrlm_barrier("boot", /*gen*/0, /*timeout_ms*/0) != 0) {
+    if (ctrl_barrier("boot", /*gen*/0, /*timeout_ms*/0) != 0) {
         log_warn("CTRLm barrier 'boot' timed out or failed; continuing may be unsafe");
     /* You may choose to bail out here instead of continuing. */
     }
@@ -90,7 +90,7 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
 
     /* 8. Optional: synchronize after runtime is fully online
        Only proceed when every node's UCX and dispatcher are ready. */
-    if (ctrlm_barrier("runtime_ready", /*gen*/1, /*timeout_ms*/0) != 0) {
+    if (ctrl_barrier("runtime_ready", /*gen*/1, /*timeout_ms*/0) != 0) {
         log_warn("CTRLm barrier 'runtime_ready' failed; cluster readiness may be inconsistent");
         /* Consider returning error here if you want strict semantics. */
     }
@@ -106,7 +106,7 @@ void leopar_finalize(void)
     /* A. Synchronize shutdown across agents.
     The idea: you call finalize only after your application logic is done.
     This barrier ensures all nodes reach this point before tearing down transports. */
-    if (ctrlm_barrier("shutdown", /*gen*/2, /*timeout_ms*/0) != 0) {
+    if (ctrl_barrier("shutdown", /*gen*/2, /*timeout_ms*/0) != 0) {
         log_warn("CTRLm barrier 'shutdown' failed or timed out");
         /* You can still proceed locally to avoid hanging forever. */
     }
@@ -121,6 +121,8 @@ void leopar_finalize(void)
     if (ucx_finalize(&g_ctx.ucx_ctx) != 0) {
         log_error("UCX finalize failed at rank=%d", g_ctx.rank);
     }
+
+    ctrl_stop();
 
     /* 4. Close log system */
     log_info("LeoPar runtime finalized at rank %d", g_ctx.rank);
