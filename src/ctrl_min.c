@@ -151,6 +151,14 @@ static void bstate_release(bstate_t* s) {
     log_info("CTRLm: RELEASE name=%s gen=%" PRIu64 " broadcasted", s->name, s->gen);
 }
 
+static void set_rcv_timeout(int fd, uint32_t ms) {
+    struct timeval tv;
+    tv.tv_sec  = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
+
 /* ---- Coordinator server thread ---- */
 static void* server_main(void* arg) {
     (void)arg;
@@ -388,17 +396,18 @@ void ctrlm_stop(void) {
     log_info("CTRLm: stopped");
 }
 
-/* Robust client: retry connect+ACK a few times before giving up, then wait for RELEASE. */
+/* Robust client: retry connect+ACK; after ACK wait RELEASE with remaining barrier timeout. */
 static int barrier_client_wait(const char* host, int port,
                                const char* name, uint64_t gen, uint32_t timeout_ms,
                                int src_rank)
 {
     if (timeout_ms == 0) timeout_ms = 60000;
 
-    /* pull retry knobs from tcp config, with sane fallbacks */
-    int retry_max = (G.cfg.tcp && G.cfg.tcp->retry_max > 0) ? G.cfg.tcp->retry_max : 10;
-    uint32_t per_try_ms = (G.cfg.tcp && G.cfg.tcp->connect_timeout_ms > 0)
-                            ? (uint32_t)G.cfg.tcp->connect_timeout_ms : 3000;
+    const int retry_max   = (G.cfg.tcp && G.cfg.tcp->retry_max > 0) ? G.cfg.tcp->retry_max : 10;
+    const uint32_t pertry = (G.cfg.tcp && G.cfg.tcp->connect_timeout_ms > 0)
+                              ? (uint32_t)G.cfg.tcp->connect_timeout_ms : 3000;
+
+    struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
 
     struct sockaddr_in a; memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET; a.sin_port = htons((uint16_t)port);
@@ -413,13 +422,23 @@ static int barrier_client_wait(const char* host, int port,
     char dip[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &a.sin_addr, dip, sizeof(dip));
 
     int fd = -1;
-    int attempt = 0;
 
-    /* Phase-0: connect + send header + wait ACK ('A') with retries */
-    for (attempt = 1; attempt <= retry_max; ++attempt) {
+    /* Phase-0: connect + send ARRIVE + wait ACK 'A' (this phase用 pertry) */
+    for (int attempt = 1; attempt <= retry_max; ++attempt) {
+        /* 检查整体剩余时间，避免无意义重试 */
+        struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+        uint64_t elapsed_ms = (now.tv_sec - t0.tv_sec) * 1000ull
+                            + (now.tv_nsec - t0.tv_nsec) / 1000000ull;
+        if (elapsed_ms >= timeout_ms) {
+            log_warn("CTRLm: connect+ACK exhausted barrier deadline for name=%s gen=%" PRIu64, name, gen);
+            return ETIMEDOUT;
+        }
+
         fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) { usleep(1000 * 50); continue; }
-        set_timeouts(fd, per_try_ms);
+        if (fd < 0) { usleep(1000*50); continue; }
+
+        /* 连接与 ACK 使用较短超时 */
+        set_timeouts(fd, pertry);
 
         log_info("CTRLm: dialing attempt %d/%d -> %s:%d for barrier(name=%s, gen=%" PRIu64 ", from rank=%d)",
                  attempt, retry_max, dip, port, name, gen, src_rank);
@@ -428,43 +447,42 @@ static int barrier_client_wait(const char* host, int port,
             int e = errno;
             log_warn("CTRLm: connect(%s:%d) failed: errno=%d (%s)", dip, port, e, strerror(e));
             close(fd); fd = -1;
-            if (attempt < retry_max) usleep(1000 * 100); /* 100ms backoff */
+            if (attempt < retry_max) usleep(1000*100);
             continue;
         }
 
-        /* send ARRIVE header+name */
         arrive_hdr_t h;
-        h.magic = MAGIC_LEOB; h.op = OP_ARRIVE;
-        h.name_len = (uint32_t)strnlen(name, 63);
-        h.src_rank = (uint32_t)src_rank;
-        h.gen      = gen;
+        h.magic   = MAGIC_LEOB; h.op = OP_ARRIVE;
+        h.name_len= (uint32_t)strnlen(name, 63);
+        h.src_rank= (uint32_t)src_rank;
+        h.gen     = gen;
 
         ssize_t n1 = send(fd, &h, sizeof(h), MSG_NOSIGNAL);
         if (n1 != (ssize_t)sizeof(h)) {
             int e = errno;
-            log_warn("CTRLm: send header failed n=%zd (errno=%d %s)", n1, e, strerror(e));
+            log_warn("CTRLm: send header failed n=%zd errno=%d (%s)", n1, e, strerror(e));
             close(fd); fd = -1;
-            if (attempt < retry_max) usleep(1000 * 100);
+            if (attempt < retry_max) usleep(1000*100);
             continue;
         }
         if (h.name_len) {
             ssize_t n2 = send(fd, name, h.name_len, MSG_NOSIGNAL);
             if (n2 != (ssize_t)h.name_len) {
                 int e = errno;
-                log_warn("CTRLm: send name failed n=%zd (<%u) (errno=%d %s)",
+                log_warn("CTRLm: send name failed n=%zd (<%u) errno=%d (%s)",
                          n2, h.name_len, e, strerror(e));
                 close(fd); fd = -1;
-                if (attempt < retry_max) usleep(1000 * 100);
+                if (attempt < retry_max) usleep(1000*100);
                 continue;
             }
         }
 
-        /* wait ACK 'A' */
+        /* 等 ACK 'A' */
         char A;
         ssize_t nA = recv(fd, &A, 1, 0);
         if (nA == 1 && A == 'A') {
             log_info("CTRLm: ACK received for barrier(name=%s, gen=%" PRIu64 ")", name, gen);
-            break;  /* success Phase-0, keep fd to wait RELEASE */
+            break;  /* 进入 Phase-1 等待 RELEASE */
         } else {
             if (nA == 0) {
                 log_warn("CTRLm: ACK recv: peer closed (name=%s gen=%" PRIu64 ")", name, gen);
@@ -474,7 +492,7 @@ static int barrier_client_wait(const char* host, int port,
                          nA, e, strerror(e), name, gen);
             }
             close(fd); fd = -1;
-            if (attempt < retry_max) usleep(1000 * 100);
+            if (attempt < retry_max) usleep(1000*100);
             continue;
         }
     }
@@ -485,8 +503,13 @@ static int barrier_client_wait(const char* host, int port,
         return -1;
     }
 
-    /* Phase-1: wait final RELEASE 'R' (may block until all arrived) */
-    /* Use the remaining overall timeout if你想要更精细，这里简单用 socket recv 超时 */
+    /* Phase-1: 等 RELEASE 'R' —— 用“barrier 剩余时间”作为 RCVTIMEO */
+    struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+    uint64_t elapsed_ms = (now.tv_sec - t0.tv_sec) * 1000ull
+                        + (now.tv_nsec - t0.tv_nsec) / 1000000ull;
+    uint32_t remain = (elapsed_ms >= timeout_ms) ? 1u : (uint32_t)(timeout_ms - elapsed_ms);
+    set_rcv_timeout(fd, remain);
+
     char R;
     ssize_t nR = recv(fd, &R, 1, 0);
     int ok = (nR == 1 && R == 'R') ? 0 : -1;
@@ -494,10 +517,12 @@ static int barrier_client_wait(const char* host, int port,
     if (ok == 0) {
         log_info("CTRLm: RELEASE received for barrier(name=%s, gen=%" PRIu64 ")", name, gen);
     } else {
+        int e = errno;
         if (nR == 0) {
             log_warn("CTRLm: RELEASE recv: peer closed (name=%s gen=%" PRIu64 ")", name, gen);
         } else {
-            log_warn("CTRLm: RELEASE recv failed or unexpected (n=%zd)", nR);
+            log_warn("CTRLm: RELEASE recv failed: n=%zd errno=%d (%s) (name=%s gen=%" PRIu64 ")",
+                     nR, e, strerror(e), name, gen);
         }
     }
     close(fd);
