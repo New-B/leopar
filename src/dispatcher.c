@@ -302,7 +302,7 @@ void dispatcher_progress_once(void)
     ucp_worker_progress(worker);
 
     /* 只探测请求类 opcode，避免与 API 对响应竞争 */
-    static const int req_ops[] = { OP_FUNC_ANNOUNCE, OP_CREATE_REQ, OP_JOIN_REQ, OP_EXIT_NOTIFY, OP_JOIN_REQ, OP_JOIN_RESP };
+    static const int req_ops[] = { OP_FUNC_ANNOUNCE, OP_CREATE_REQ, OP_JOIN_REQ, OP_EXIT_NOTIFY };
     int progressed = 0;
 
     for (size_t i = 0; i < sizeof(req_ops)/sizeof(req_ops[0]); i++) {
