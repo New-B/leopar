@@ -101,7 +101,7 @@ int main(int argc, char **argv)
         // print_stats("join",   tj, iters);
         // print_stats("total",  tt, iters);
 
-        for (int p = 1; p < 6; p++){
+        for (int p = 0; p < 6; p++){
             for (int i=0;i<iters;i++) {
                 if(i >= p*0.2*iters){
                     target = 0;
@@ -140,7 +140,7 @@ int main(int argc, char **argv)
         // extern int ucx_barrier(int root, int timeout_ms);
         // //(void)_keep_worker_sym;
         // ucx_barrier(0, 30000);
-        sleep(20);
+        sleep(120);
         printf("[rank %d] done\n", my_rank);
         leopar_finalize();
 
