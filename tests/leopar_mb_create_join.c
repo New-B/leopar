@@ -109,7 +109,8 @@ int main(int argc, char **argv)
                     target = 1;
                 }
                 double t0 = now_us();
-                leo_thread_t t; leo_thread_create(&t, NULL, noop, NULL, target);
+                leo_thread_t t; 
+                leo_thread_create(&t, NULL, noop, NULL, target);
                 double t1 = now_us();
                 leo_thread_join(t, NULL);
                 double t2 = now_us();

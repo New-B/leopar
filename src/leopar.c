@@ -266,6 +266,7 @@ int leo_thread_join(leo_thread_t thread, void **retval)
         log_error("Failed to send JOIN_REQ for gtid=%" PRIu64, req.gtid);
         return -1;
     }
+    log_debug("Sent JOIN_REQ for gtid=%" PRIu64 " to rank=%d", req.gtid, owner_rank);
 
     /* 3. Wait for JOIN_RESP */
     while (1) {
