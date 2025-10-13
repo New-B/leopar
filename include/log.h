@@ -20,7 +20,7 @@ typedef enum {
 } LogLevel;
 
 #ifndef LEOPAR_DEFAULT_LOG_LEVEL
-#define LEOPAR_DEFAULT_LOG_LEVEL LOG_DEBUG
+#define LEOPAR_DEFAULT_LOG_LEVEL LOG_WARN
 #endif
 
  /* Logging interface */
