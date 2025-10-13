@@ -244,10 +244,9 @@ static void test_concurrent_create_then_join(int concurrency, int target) {
         pthread_create(&g_jths[j], NULL, jworker_main_idx, (void*)(intptr_t)i);
         ++j;
     }
-    safe_pr("=== concurrent join end ===\n");
     for (int k=0;k<succ_create;k++) pthread_join(g_jths[k], NULL);
     double t_end_joins = now_us();
-    safe_pr("=== concurrent join end ===\n");
+
 
 
     /* Summarize join results */
@@ -289,8 +288,8 @@ int main(int argc, char **argv)
         int concurrency_levels[] = {16, 32, 48, 64, 80, 96, 112, 128};
 
         /* Baseline single create/join */
-        for(int i=0;i<2;i++) {
-            //test_baseline_single( (iters>0?iters:10000), 1 );
+        for(int i=0;i<5;i++) {
+            test_baseline_single( (iters>0?iters:10000), 1 );
 
             for (size_t i=0;i<sizeof(concurrency_levels)/sizeof(concurrency_levels[0]); ++i) {
                 
@@ -346,7 +345,7 @@ int main(int argc, char **argv)
         /* responder: keep process alive to run incoming remote threads */
         safe_pr("[rank %d] responder: waiting for initiator, no local creates\n", my_rank);
         /* Keep alive longer than tests */
-        sleep(250);
+        sleep(500);
         safe_pr("[rank %d] done\n", my_rank);
         leopar_finalize();
 
