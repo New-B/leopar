@@ -30,6 +30,10 @@
 #include <pthread.h>
 #endif
  
+/* Define TAG_MASK_OPCODE for tag matching */
+/* ---- Tag helpers: hi32=opcode, lo32=rank ---- */
+#define TAG_MAKE(op, rank)     ((((uint64_t)(op)) << 32) | (uint32_t)(rank))
+#define TAG_MASK_OPCODE 0xFFFFFFFF00000000ULL
  
 /* -------------------- Public API -------------------- */
 /* 
@@ -269,27 +273,84 @@ int leo_thread_join(leo_thread_t thread, void **retval)
     log_debug("Sent JOIN_REQ for gtid=%" PRIu64 " to rank=%d", req.gtid, owner_rank);
 
     /* 3. Wait for JOIN_RESP */
-    while (1) {
-        size_t len = 0;
-        ucp_tag_t tag = 0;
-        ucp_tag_recv_info_t info;
-        void *resp_buf = ucx_recv_any_alloc(&len, &tag, &info);
+    // while (1) {
+    //     size_t len = 0;
+    //     ucp_tag_t tag = 0;
+    //     ucp_tag_recv_info_t info;
+    //     void *resp_buf = ucx_recv_any_alloc(&len, &tag, &info);
 
-        if (!resp_buf) continue;
+    //     if (!resp_buf) continue;
 
-        msg_join_resp_t *resp = (msg_join_resp_t*)resp_buf;
-        if (resp->opcode == OP_JOIN_RESP && resp->gtid == thread) {
-            if (resp->done) {
-                log_info("JOIN_RESP: gtid=%" PRIu64 " completed", thread);
-                free(resp_buf);
-                return 0;
-            } else {
-                log_warn("JOIN_RESP: gtid=%" PRIu64 " not finished yet", thread);
-                /* Blocking design: keep waiting until done==1 */
-            }
+    //     msg_join_resp_t *resp = (msg_join_resp_t*)resp_buf;
+    //     if (resp->opcode == OP_JOIN_RESP && resp->gtid == thread) {
+    //         if (resp->done) {
+    //             log_info("JOIN_RESP: gtid=%" PRIu64 " completed", thread);
+    //             free(resp_buf);
+    //             return 0;
+    //         } else {
+    //             log_warn("JOIN_RESP: gtid=%" PRIu64 " not finished yet", thread);
+    //             /* Blocking design: keep waiting until done==1 */
+    //         }
+    //     }
+    //     free(resp_buf);
+    // }
+
+    /* Replace your any-recv loop with this: */
+    /* owner_rank = LEO_TID_RANK(thread) already known */
+
+    ucp_worker_h worker = g_ctx.ucx_ctx.ucp_worker;
+
+    /* buffer for response */
+    msg_join_resp_t resp;
+    memset(&resp, 0, sizeof(resp));
+
+    /* build expected tag: hi32 = OP_JOIN_RESP, lo32 = owner_rank */
+    ucp_tag_t expect_tag = TAG_MAKE(OP_JOIN_RESP, owner_rank);
+
+    /* recv params */
+    ucp_request_param_t prm;
+    memset(&prm, 0, sizeof(prm));
+    prm.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE;
+    prm.datatype     = ucp_dt_make_contig(1);
+
+    /* post one tagged receive for this join */
+    ucs_status_ptr_t rreq = ucp_tag_recv_nbx(worker, &resp, sizeof(resp),
+                                            expect_tag, TAG_MASK_OPCODE, &prm);
+
+    if (UCS_PTR_IS_PTR(rreq)) {
+        ucs_status_t st;
+        do {
+            ucp_worker_progress(worker);
+            st = ucp_request_check_status(rreq);
+        } while (st == UCS_INPROGRESS);
+        ucp_request_free(rreq);
+        if (st != UCS_OK) {
+            log_warn("JOIN: recv completion status=%d for gtid=%" PRIu64, st, thread);
+            return -1;
         }
-        free(resp_buf);
+    } else {
+        ucs_status_t st = UCS_PTR_STATUS(rreq);
+        if (st != UCS_OK) {
+            log_warn("JOIN: recv immediate status=%d for gtid=%" PRIu64, (int)st, thread);
+            return -1;
+        }
     }
+
+    /* verify payload */
+    if (resp.opcode != OP_JOIN_RESP || resp.gtid != thread) {
+        log_warn("JOIN: unexpected resp opcode=%d gtid=%" PRIu64 " (expected=%" PRIu64 ")",
+                resp.opcode, resp.gtid, thread);
+        return -1;
+    }
+    if (resp.done) {
+        log_info("JOIN_RESP: gtid=%" PRIu64 " completed", thread);
+        return 0;
+    } else {
+        log_warn("JOIN_RESP: gtid=%" PRIu64 " not finished yet", thread);
+        /* protocol dependent: either retry or return waiting status */
+        return -1;
+    }
+
 }
 
 

@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include <math.h>
+#include <stdatomic.h>
 
 /* -------- timing helpers -------- */
 static inline double now_us(void) {
@@ -55,39 +56,81 @@ static void safe_pr(const char *fmt, ...) {
     fflush(stdout);
 }
 
-// /* -------- concurrent join helpers -------- */
+/* concurrent create worker arg */
+typedef struct {
+    int idx;
+    int target;
+    double *lat_out;
+    leo_thread_t *out_handle;
+    int *rc_out;
+} cworker_arg_t;
 
-// /* joiner for a single gtid: measures join latency and stores into out[idx] */
-// typedef struct {
-//     leo_thread_t t;
-//     double *out;
-//     int idx;
-// } joiner_arg_t;
+/* concurrent join worker arg */
+typedef struct {
+    int idx;
+    double *lat_out;
+    leo_thread_t handle;
+    int *rc_out;
+} jworker_arg_t;
 
-// static void* joiner_thread_main(void *v) {
-//     joiner_arg_t *a = (joiner_arg_t*)v;
-//     double t0 = now_us();
-//     /* perform join; assuming leo_thread_join blocks until thread finishes on owner */
-//     int rc = leo_thread_join(a->t, NULL);
-//     double t1 = now_us();
-//     a->out[a->idx] = t1 - t0;
-//     if (rc != 0) {
-//         safe_pr("JOINER: leo_thread_join rc=%d idx=%d\n", rc, a->idx);
-//     }
-//     return NULL;
-// }
+static double *g_create_lat = NULL;    /* per-create latency (us) */
+static int    *g_create_rc  = NULL;    /* per-create return code */
+static leo_thread_t *g_handles = NULL; /* created handles */
+static pthread_t *g_cths = NULL;       /* thread ids for create workers */
+static cworker_arg_t *g_cargs = NULL;  /* create worker args */
 
-// /* helper: create remote thread and return leo_thread_t in *out_t */
-// static int create_remote_thread(int target_rank, leo_thread_t *out_t, void *(*fn)(void*), void *arg) {
-//     leo_thread_t t;
-//     int rc = leo_thread_create(&t, NULL, fn, arg, target_rank);
-//     if (rc != 0) {
-//         safe_pr("create_remote_thread: create failed rc=%d\n", rc);
-//         return rc;
-//     }
-//     *out_t = t;
-//     return 0;
-// }
+static double *g_join_lat = NULL;
+static int    *g_join_rc  = NULL;
+static pthread_t *g_jths  = NULL;
+static jworker_arg_t *g_jargs = NULL;
+
+/* allocate globals before launching threads */
+static int alloc_globals(int n) {
+    g_create_lat = calloc((size_t)n, sizeof(double));
+    g_create_rc  = calloc((size_t)n, sizeof(int));
+    g_handles    = calloc((size_t)n, sizeof(leo_thread_t));
+    g_cths       = calloc((size_t)n, sizeof(pthread_t));
+    g_cargs      = calloc((size_t)n, sizeof(cworker_arg_t));
+    g_join_lat   = calloc((size_t)n, sizeof(double));
+    g_join_rc    = calloc((size_t)n, sizeof(int));
+    g_jths       = calloc((size_t)n, sizeof(pthread_t));
+    g_jargs      = calloc((size_t)n, sizeof(jworker_arg_t));
+    if (!g_create_lat || !g_create_rc || !g_handles || !g_cths || 
+        !g_cargs || !g_join_lat || !g_join_rc || !g_jths || !g_jargs) {
+        return -1;
+    }
+    return 0;
+}
+
+/* create worker: uses global arrays and its index passed via arg */
+static void* cworker_main_idx(void *v) {
+    int idx = (int)(intptr_t)v;
+    double t0 = now_us();
+    leo_thread_t t;
+    int rc = leo_thread_create(&t, NULL, noop, NULL, /*target*/ 1);
+    double t1 = now_us();
+
+    /* write to global arrays at slot idx -- unique to this thread */
+    g_create_lat[idx] = t1 - t0;
+    g_create_rc[idx] = rc;
+    if (rc == 0) g_handles[idx] = t;
+    else g_handles[idx] = (leo_thread_t)0;
+    return NULL;
+}
+
+static void* jworker_main_idx(void *v) {
+    int idx = (int)(intptr_t)v;
+    // safe_pr("concurrent join request start for in %d\n", idx);
+    double t0 = now_us();
+    int rc = leo_thread_join(g_handles[idx], NULL);
+    double t1 = now_us();
+    // safe_pr("join request finished for thread %d\n", idx);
+    g_join_lat[idx] = t1 - t0;
+    g_join_rc[idx] = rc;
+    return NULL;
+}
+
+
 
 /* -------- tests implemented on initiator (rank 0) -------- */
 
@@ -131,79 +174,20 @@ static void test_baseline_single(int iters, int target) {
     free(tc); free(tj); free(tt);
 }
 
-// /* Long task join: create a long-running remote task (sleep secs), then spawn many joiners
-//    while it is running to stress dispatcher & join-path. joiners will block until sleeper exits. */
-// static void test_long_task_join(int secs, int joiners, int target) {
-//     safe_pr("=== Long-task join: sleeper=%ds joiners=%d target=%d ===\n", secs, joiners, target);
 
-//     int arg = secs;
-//     leo_thread_t sleeper_t;
-//     if (create_remote_thread(target, &sleeper_t, sleeper, &arg) != 0) {
-//         safe_pr("Failed to create sleeper thread\n");
-//         return;
-//     }
-
-//     /* wait a brief moment to ensure remote task started */
-//     usleep(100*1000);
-
-//     double *lat = (double*)malloc(sizeof(double)*joiners);
-//     pthread_t *ths = (pthread_t*)malloc(sizeof(pthread_t)*joiners);
-//     joiner_arg_t *args = (joiner_arg_t*)malloc(sizeof(joiner_arg_t)*joiners);
-
-//     for (int i=0;i<joiners;i++) {
-//         args[i].t = sleeper_t;
-//         args[i].out = lat;
-//         args[i].idx = i;
-//         pthread_create(&ths[i], NULL, joiner_thread_main, &args[i]);
-//         usleep(1000);
-//     }
-
-//     for (int i=0;i<joiners;i++) pthread_join(ths[i], NULL);
-
-//     print_stats("longtask-join-latency-us", lat, joiners);
-
-//     free(lat); free(ths); free(args);
-// }
-
-// /* concurrent create worker arg */
-// typedef struct {
-//     int idx;
-//     int target;
-//     double *lat_out;
-//     leo_thread_t *out_handle;
-//     int *rc_out;
-// } cworker_arg_t;
-
-// static void* cworker_main(void* v) {
-//     cworker_arg_t *a = (cworker_arg_t*)v;
-//     double t0 = now_us();
-//     leo_thread_t t;
-//     int rc = leo_thread_create(&t, NULL, noop, NULL, a->target);
-//     double t1 = now_us();
-//     a->lat_out[a->idx] = t1 - t0;
-//     a->rc_out[a->idx] = rc;
-//     if (rc == 0) a->out_handle[a->idx] = t;
-//     else a->out_handle[a->idx] = (leo_thread_t)0;
-//     return NULL;
-// }
-
-// /* concurrent join worker arg */
-// typedef struct {
-//     int idx;
-//     double *lat_out;
-//     leo_thread_t handle;
-//     int *rc_out;
-// } jworker_arg_t;
-
-// static void* jworker_main(void* v) {
-//     jworker_arg_t *a = (jworker_arg_t*)v;
-//     double t0 = now_us();
-//     int rc = leo_thread_join(a->handle, NULL);
-//     double t1 = now_us();
-//     a->lat_out[a->idx] = t1 - t0;
-//     a->rc_out[a->idx] = rc;
-//     return NULL;
-// }
+/* Helper: compute stddev (population) */
+static double compute_stddev(double *x, int n) {
+    if (n <= 1) return 0.0;
+    double sum = 0;
+    for (int i=0;i<n;i++) sum += x[i];
+    double mean = sum / n;
+    double s = 0;
+    for (int i=0;i<n;i++) {
+        double d = x[i] - mean;
+        s += d*d;
+    }
+    return sqrt(s / (n-1));
+}
 
 
 /* The test: concurrent creates then concurrent join on created gtids.
@@ -211,18 +195,9 @@ static void test_baseline_single(int iters, int target) {
  * - target: rank to create tasks on
  */
 static void test_concurrent_create_then_join(int concurrency, int target) {
-    safe_pr("=== concurrent create then join: concurrency=%d target=%d ===\n", concurrency, target);
+    safe_pr("=== concurrent create: concurrency=%d target=%d ===\n", concurrency, target);
 
-    // /* allocate arrays */
-    // double *create_lat = calloc((size_t)creates, sizeof(double));
-    // int *create_rc = calloc((size_t)creates, sizeof(int));
-
-    // pthread_t *cths = calloc((size_t)creates, sizeof(pthread_t));
-    // cworker_arg_t *cargs = calloc((size_t)creates, sizeof(cworker_arg_t));
-
-    double *tc = (double*)malloc(sizeof(double)*concurrency);
-    double *tj = (double*)malloc(sizeof(double)*concurrency);
-    leo_thread_t *handles = calloc((size_t)concurrency, sizeof(leo_thread_t));
+    if (alloc_globals(concurrency) != 0) { /* handle OOM */ }
 
     /* warmup small set */
     for (int w=0; w<10; ++w) {
@@ -232,98 +207,63 @@ static void test_concurrent_create_then_join(int concurrency, int target) {
 
     /* Launch concurrent create workers */
     double t_start_creates = now_us();
-    for(int i = 0; i < concurrency; i++) {
-        double t0 = now_us();
-        leo_thread_create(&handles[i], NULL, noop, NULL, target);
-        double t1 = now_us();
-        tc[i] = t1 - t0;
+    for (int i = 0; i < concurrency; ++i) {
+        pthread_create(&g_cths[i], NULL, cworker_main_idx, (void*)(intptr_t)i);
     }
+    for (int i=0;i<concurrency;i++) pthread_join(g_cths[i], NULL);
     double t_end_creates = now_us();
 
-    /* Launch joiners concurrently */
-    double t_start_joins = now_us();
-    for (int i=0;i<concurrency;i++) {
-        double t0 = now_us();
-        leo_thread_join(handles[i], NULL);
-        double t1 = now_us();
-        tj[i] = t1 - t0;
+
+    /* Summarize create results */
+    int succ_create = 0;
+    for (int i=0;i<concurrency;i++) if (g_create_rc[i] == 0) succ_create++;
+    safe_pr("Creates done: total=%d success=%d fail=%d elapsed_ms=%.2f\n",
+        concurrency, succ_create, concurrency - succ_create, (t_end_creates - t_start_creates)/1e3);
+
+    /* print create latency stats for successful ones */
+    double *create_lat_succ = malloc(sizeof(double)*succ_create);
+    int idx=0;
+    for (int i=0;i<concurrency;i++) if (g_create_rc[i]==0) create_lat_succ[idx++] = g_create_lat[i];
+    print_stats("create_latency_us", create_lat_succ, succ_create);
+    safe_pr("create stddev=%.2f us\n", compute_stddev(create_lat_succ, succ_create));
+    free(create_lat_succ);
+
+    /* Now concurrently join all successful handles (one joiner per created handle) */
+    int joins = succ_create;
+    if (joins == 0) {
+        safe_pr("No successful creates, skipping join stage\n");
+        return;
     }
+
+    safe_pr("=== concurrent then join: concurrency=%d target=%d ===\n", concurrency, target);
+
+    double t_start_joins = now_us();
+    /* spawn joiners for all successful creates */
+    for (int i=0, j=0; i<concurrency; ++i) {
+        if (g_create_rc[i] != 0) continue; /* skip failed create */
+        pthread_create(&g_jths[j], NULL, jworker_main_idx, (void*)(intptr_t)i);
+        ++j;
+    }
+    safe_pr("=== concurrent join end ===\n");
+    for (int k=0;k<succ_create;k++) pthread_join(g_jths[k], NULL);
     double t_end_joins = now_us();
-
-    print_stats("create", tc, concurrency);
-    print_stats("join",   tj, concurrency);
-    safe_pr("total concurrent create latency = %.2f \n", (t_end_creates - t_start_creates));
-    safe_pr("total concurrent join latency = %.2f \n", (t_end_joins - t_start_joins));
+    safe_pr("=== concurrent join end ===\n");
 
 
+    /* Summarize join results */
+    int succ_join = 0;
+    for (int i=0;i<joins;i++) if (g_join_rc[i] == 0) succ_join++;
+    safe_pr("Joins done: total=%d success=%d fail=%d elapsed_ms=%.2f\n",
+            joins, succ_join, joins - succ_join, (t_end_joins - t_start_joins)/1e3);
 
-    // /* Summarize create results */
-    // int succ_create = 0;
-    // for (int i=0;i<creates;i++) if (create_rc[i] == 0) succ_create++;
-    // safe_pr("Creates done: total=%d success=%d fail=%d elapsed_ms=%.2f\n",
-    //         creates, succ_create, creates - succ_create, (t_end_creates - t_start_creates)/1e3);
+    /* stats for successful joins */
+    double *join_lat_succ = malloc(sizeof(double)*succ_join);
+    idx = 0;
+    for (int i=0;i<joins;i++) if (g_join_rc[i]==0) join_lat_succ[idx++] = g_join_lat[i];
+    print_stats("join_latency_us", join_lat_succ, succ_join);
+    safe_pr("join stddev=%.2f us\n", compute_stddev(join_lat_succ, succ_join));
+    free(join_lat_succ);
 
-    // /* print create latency stats for successful ones */
-    // double *create_lat_succ = malloc(sizeof(double)*succ_create);
-    // int idx=0;
-    // for (int i=0;i<creates;i++) if (create_rc[i]==0) create_lat_succ[idx++] = create_lat[i];
-    // print_stats("create_latency_us", create_lat_succ, succ_create);
-    // safe_pr("create stddev=%.2f us\n", compute_stddev(create_lat_succ, succ_create));
-    // free(create_lat_succ);
-
-    // /* Now concurrently join all successful handles (one joiner per created handle) */
-    // int joins = succ_create;
-    // if (joins == 0) {
-    //     safe_pr("No successful creates, skipping join stage\n");
-    //     free(create_lat); free(create_rc); free(handles);
-    //     free(cths); free(cargs);
-    //     return;
-    // }
-
-    // double *join_lat = calloc((size_t)joins, sizeof(double));
-    // int *join_rc = calloc((size_t)joins, sizeof(int));
-    // pthread_t *jths = calloc((size_t)joins, sizeof(pthread_t));
-    // jworker_arg_t *jargs = calloc((size_t)joins, sizeof(jworker_arg_t));
-
-    // /* map successful handles into join arrays */
-    // idx = 0;
-    // for (int i=0;i<creates;i++) {
-    //     if (create_rc[i] == 0) {
-    //         jargs[idx].idx = idx;
-    //         jargs[idx].lat_out = join_lat;
-    //         jargs[idx].handle = handles[i];
-    //         jargs[idx].rc_out = join_rc;
-    //         idx++;
-    //     }
-    // }
-
-    // /* Launch joiners concurrently */
-    // double t_start_joins = now_us();
-    // for (int i=0;i<joins;i++) {
-    //     pthread_create(&jths[i], NULL, jworker_main, &jargs[i]);
-    // }
-    // double t_end_joins = now_us();
-    // for (int i=0;i<joins;i++) pthread_join(jths[i], NULL);
-
-
-    // /* Summarize join results */
-    // int succ_join = 0;
-    // for (int i=0;i<joins;i++) if (join_rc[i] == 0) succ_join++;
-    // safe_pr("Joins done: total=%d success=%d fail=%d elapsed_ms=%.2f\n",
-    //         joins, succ_join, joins - succ_join, (t_end_joins - t_start_joins)/1e3);
-
-    // /* stats for successful joins */
-    // double *join_lat_succ = malloc(sizeof(double)*succ_join);
-    // idx = 0;
-    // for (int i=0;i<joins;i++) if (join_rc[i]==0) join_lat_succ[idx++] = join_lat[i];
-    // print_stats("join_latency_us", join_lat_succ, succ_join);
-    // safe_pr("join stddev=%.2f us\n", compute_stddev(join_lat_succ, succ_join));
-    // free(join_lat_succ);
-
-    /* cleanup arrays */
-    free(tc); free(tj); free(handles);
-    // free(cths); free(cargs);
-    // free(join_lat); free(join_rc); free(jths); free(jargs);
 }
 
 
@@ -350,9 +290,10 @@ int main(int argc, char **argv)
 
         /* Baseline single create/join */
         for(int i=0;i<2;i++) {
-            test_baseline_single( (iters>0?iters:10000), 1 );
+            //test_baseline_single( (iters>0?iters:10000), 1 );
 
             for (size_t i=0;i<sizeof(concurrency_levels)/sizeof(concurrency_levels[0]); ++i) {
+                
                 test_concurrent_create_then_join(concurrency_levels[i], 1);
             }
         }
