@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <math.h>
 
 /* -------- timing helpers -------- */
 static inline double now_us(void) {
@@ -19,10 +20,19 @@ static int cmp_dbl(const void *a, const void *b) {
 }
 static void print_stats(const char *name, double *x, int n) {
     qsort(x, n, sizeof(double), cmp_dbl);
-    int p50 = (int)(0.50 * n), p95 = (int)(0.95 * n), p99 = (int)(0.99 * n);
-    double sum = 0; for (int i=0;i<n;i++) sum += x[i];
-    printf("%s: avg=%.2f us  p50=%.2f  p95=%.2f  p99=%.2f p100=%.2f (n=%d)\n",
-           name, sum/n, x[p50], x[p95], x[p99], sum, n);
+    int idx50 = (int)ceil(0.50 * n) - 1;
+    int idx95 = (int)ceil(0.95 * n) - 1;
+    int idx99 = (int)ceil(0.99 * n) - 1;
+    if (idx50 < 0) idx50 = 0;
+    if (idx95 < 0) idx95 = 0;
+    if (idx99 < 0) idx99 = 0;
+
+    double sum = 0.0;
+    for (int i = 0; i < n; i++)
+        sum += x[i];
+
+    printf("%s: avg=%.2f us  p50=%.2f  p95=%.2f  p99=%.2f  max=%.2f (n=%d)\n",
+           name, sum / n, x[idx50], x[idx95], x[idx99], x[n - 1], n);
 }
 
 /* -------- worker functions to be executed remotely -------- */
@@ -339,7 +349,7 @@ int main(int argc, char **argv)
         int concurrency_levels[] = {16, 32, 48, 64, 80, 96, 112, 128};
 
         /* Baseline single create/join */
-        for(int i=0;i<5;i++) {
+        for(int i=0;i<2;i++) {
             test_baseline_single( (iters>0?iters:10000), 1 );
 
             for (size_t i=0;i<sizeof(concurrency_levels)/sizeof(concurrency_levels[0]); ++i) {
@@ -395,7 +405,7 @@ int main(int argc, char **argv)
         /* responder: keep process alive to run incoming remote threads */
         safe_pr("[rank %d] responder: waiting for initiator, no local creates\n", my_rank);
         /* Keep alive longer than tests */
-        sleep(500);
+        sleep(250);
         safe_pr("[rank %d] done\n", my_rank);
         leopar_finalize();
 
