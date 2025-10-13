@@ -14,15 +14,15 @@ ifeq ($(HAVE_PKG_UCX),yes)
   UCX_LIBS   := $(shell PKG_CONFIG_PATH=$(UCX_HOME)/lib/pkgconfig:$(PKG_CONFIG_PATH) pkg-config --libs ucx)
   UCX_LIBDIR := $(shell PKG_CONFIG_PATH=$(UCX_HOME)/lib/pkgconfig:$(PKG_CONFIG_PATH) pkg-config --variable=libdir ucx)
   INCDIRS    := -Iinclude $(UCX_CFLAGS)
-  LIBDIRS    :=
+  LIBDIRS    := -lm
   UCX_LINK   := $(UCX_LIBS)
 else
   # Fallback without pkg-config
   # Detect lib dir (lib vs lib64)
   UCX_LIBDIR := $(shell if [ -d "$(UCX_HOME)/lib64" ]; then echo "$(UCX_HOME)/lib64"; else echo "$(UCX_HOME)/lib"; fi)
   INCDIRS    := -Iinclude -I$(UCX_HOME)/include
-  LIBDIRS    := -L$(UCX_LIBDIR)
-  UCX_LINK   := -lucp -luct -lucs -lucm -lm
+  LIBDIRS    := -L$(UCX_LIBDIR) -lm
+  UCX_LINK   := -lucp -luct -lucs -lucm
 endif
 
 CFLAGS   := -Wall -g -D_GNU_SOURCE $(INCDIRS)
