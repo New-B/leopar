@@ -22,7 +22,7 @@ else
   UCX_LIBDIR := $(shell if [ -d "$(UCX_HOME)/lib64" ]; then echo "$(UCX_HOME)/lib64"; else echo "$(UCX_HOME)/lib"; fi)
   INCDIRS    := -Iinclude -I$(UCX_HOME)/include
   LIBDIRS    := -L$(UCX_LIBDIR)
-  UCX_LINK   := -lucp -luct -lucs -lucm
+  UCX_LINK   := -lucp -luct -lucs -lucm -lm
 endif
 
 CFLAGS   := -Wall -g -D_GNU_SOURCE $(INCDIRS)
