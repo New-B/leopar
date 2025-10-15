@@ -18,30 +18,6 @@ leopar_context_t g_ctx;
 
 int load_config(const char *filename, int my_rank)
 {
-    /* ---- Fill DSM defaults ---- */
-    dsm_conf_c* dsmConf = &g_ctx.dsm_cfg;
-    dsmConf->is_master          = (my_rank == 0) ? 1 : 0;
-    dsmConf->master_port        = 12345;
-    dsmConf->master_ip          = ip_of(0);
-    dsmConf->master_bindaddr    = NULL;
-
-    dsmConf->worker_port        = 12346;
-    dsmConf->worker_ip          = ip_of(my_rank);
-    dsmConf->worker_bindaddr    = NULL;
-
-    dsmConf->size               = 1024ull * 1024 * 512;  /* 512 MiB */
-    dsmConf->ghost_th           = 1024ull * 1024;
-    dsmConf->cache_th           = 0.15;
-    dsmConf->unsynced_th        = 1;
-    dsmConf->factor             = 1.25;
-    dsmConf->maxclients         = 1024;
-    dsmConf->maxthreads         = 10;
-    dsmConf->backlog            = 128;
-    dsmConf->loglevel           = 3;     /* assume LOG_DEBUG ~= 2; 可被 ini 覆盖 */
-    dsmConf->logfile            = NULL;
-    dsmConf->timeout_ms         = 10;
-    dsmConf->eviction_period_ms = 100;
-
     FILE *fp = fopen(filename, "r");
     if (!fp) {
         log_error("Cannot open config file %s", filename);
@@ -115,39 +91,63 @@ int load_config(const char *filename, int my_rank)
     }
     fclose(fp);
 
-    /* ---- Optional: second pass for DSM keys ---- */
-    FILE *fp2 = fopen(filename, "r");
-    if (fp2) {
-        char line[256];
-        while (fgets(line, sizeof(line), fp2)) {
-            line[strcspn(line, "\r\n")] = '\0';
+        /* ---- Fill DSM defaults ---- */
+        dsm_conf_c* dsmConf = &g_ctx.dsm_cfg;
+        dsmConf->is_master          = (my_rank == 0) ? 1 : 0;
+        dsmConf->master_port        = 12345;
+        dsmConf->master_ip          = ip_of(0);
+        dsmConf->master_bindaddr    = NULL;
+    
+        dsmConf->worker_port        = 12346;
+        dsmConf->worker_ip          = ip_of(my_rank);
+        dsmConf->worker_bindaddr    = NULL;
+    
+        dsmConf->size               = 1024ull * 1024 * 512;  /* 512 MiB */
+        dsmConf->ghost_th           = 1024ull * 1024;
+        dsmConf->cache_th           = 0.15;
+        dsmConf->unsynced_th        = 1;
+        dsmConf->factor             = 1.25;
+        dsmConf->maxclients         = 1024;
+        dsmConf->maxthreads         = 10;
+        dsmConf->backlog            = 128;
+        dsmConf->loglevel           = 3;     /* assume LOG_DEBUG ~= 2; 可被 ini 覆盖 */
+        dsmConf->logfile            = NULL;
+        dsmConf->timeout_ms         = 10;
+        dsmConf->eviction_period_ms = 100;
 
-            if      (strncmp(line, "dsm_master_port=", 16) == 0) dsmConf->master_port = atoi(line+16);
-            else if (strncmp(line, "dsm_master_ip=",   14) == 0) dsmConf->master_ip   = strdup(line+14);
-            else if (strncmp(line, "dsm_master_bindaddr=", 20) == 0) dsmConf->master_bindaddr = strdup(line+20);
+    // /* ---- Optional: second pass for DSM keys ---- */
+    // FILE *fp2 = fopen(filename, "r");
+    // if (fp2) {
+    //     char line[256];
+    //     while (fgets(line, sizeof(line), fp2)) {
+    //         line[strcspn(line, "\r\n")] = '\0';
 
-            else if (strncmp(line, "dsm_worker_port=", 16) == 0) dsmConf->worker_port = atoi(line+16);
-            else if (strncmp(line, "dsm_worker_ip=",   14) == 0) dsmConf->worker_ip   = strdup(line+14);
-            else if (strncmp(line, "dsm_worker_bindaddr=", 20) == 0) dsmConf->worker_bindaddr = strdup(line+20);
+    //         if      (strncmp(line, "dsm_master_port=", 16) == 0) dsmConf->master_port = atoi(line+16);
+    //         else if (strncmp(line, "dsm_master_ip=",   14) == 0) dsmConf->master_ip   = strdup(line+14);
+    //         else if (strncmp(line, "dsm_master_bindaddr=", 20) == 0) dsmConf->master_bindaddr = strdup(line+20);
 
-            else if (strncmp(line, "dsm_pool_mb=",     12) == 0) {
-                long long mb = atoll(line+12);
-                if (mb > 0) dsmConf->size = (uint64_t)mb * 1024ull * 1024ull;
-            }
-            else if (strncmp(line, "dsm_ghost_th=",    13) == 0) dsmConf->ghost_th           = (uint64_t)atoll(line+13);
-            else if (strncmp(line, "dsm_cache_th=",    13) == 0) dsmConf->cache_th           = atof(line+13);
-            else if (strncmp(line, "dsm_unsynced_th=", 16) == 0) dsmConf->unsynced_th        = atoi(line+16);
-            else if (strncmp(line, "dsm_factor=",      11) == 0) dsmConf->factor             = atof(line+11);
-            else if (strncmp(line, "dsm_maxclients=",  15) == 0) dsmConf->maxclients         = atoi(line+15);
-            else if (strncmp(line, "dsm_maxthreads=",  15) == 0) dsmConf->maxthreads         = atoi(line+15);
-            else if (strncmp(line, "dsm_backlog=",     12) == 0) dsmConf->backlog            = atoi(line+12);
-            else if (strncmp(line, "dsm_loglevel=",    13) == 0) dsmConf->loglevel           = atoi(line+13);
-            else if (strncmp(line, "dsm_logfile=",     12) == 0) dsmConf->logfile            = strdup(line+12);
-            else if (strncmp(line, "dsm_timeout_ms=",  15) == 0) dsmConf->timeout_ms         = atoi(line+15);
-            else if (strncmp(line, "dsm_eviction_period_ms=", 23) == 0) dsmConf->eviction_period_ms = atoi(line+23);
-        }
-        fclose(fp2);
-    }
+    //         else if (strncmp(line, "dsm_worker_port=", 16) == 0) dsmConf->worker_port = atoi(line+16);
+    //         else if (strncmp(line, "dsm_worker_ip=",   14) == 0) dsmConf->worker_ip   = strdup(line+14);
+    //         else if (strncmp(line, "dsm_worker_bindaddr=", 20) == 0) dsmConf->worker_bindaddr = strdup(line+20);
+
+    //         else if (strncmp(line, "dsm_pool_mb=",     12) == 0) {
+    //             long long mb = atoll(line+12);
+    //             if (mb > 0) dsmConf->size = (uint64_t)mb * 1024ull * 1024ull;
+    //         }
+    //         else if (strncmp(line, "dsm_ghost_th=",    13) == 0) dsmConf->ghost_th           = (uint64_t)atoll(line+13);
+    //         else if (strncmp(line, "dsm_cache_th=",    13) == 0) dsmConf->cache_th           = atof(line+13);
+    //         else if (strncmp(line, "dsm_unsynced_th=", 16) == 0) dsmConf->unsynced_th        = atoi(line+16);
+    //         else if (strncmp(line, "dsm_factor=",      11) == 0) dsmConf->factor             = atof(line+11);
+    //         else if (strncmp(line, "dsm_maxclients=",  15) == 0) dsmConf->maxclients         = atoi(line+15);
+    //         else if (strncmp(line, "dsm_maxthreads=",  15) == 0) dsmConf->maxthreads         = atoi(line+15);
+    //         else if (strncmp(line, "dsm_backlog=",     12) == 0) dsmConf->backlog            = atoi(line+12);
+    //         else if (strncmp(line, "dsm_loglevel=",    13) == 0) dsmConf->loglevel           = atoi(line+13);
+    //         else if (strncmp(line, "dsm_logfile=",     12) == 0) dsmConf->logfile            = strdup(line+12);
+    //         else if (strncmp(line, "dsm_timeout_ms=",  15) == 0) dsmConf->timeout_ms         = atoi(line+15);
+    //         else if (strncmp(line, "dsm_eviction_period_ms=", 23) == 0) dsmConf->eviction_period_ms = atoi(line+23);
+    //     }
+    //     fclose(fp2);
+    // }
 
 
     if (ip_count != g_ctx.world_size) {
