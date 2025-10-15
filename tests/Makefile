@@ -22,12 +22,17 @@ else
   UCX_LINK   := -L$(UCX_LIBDIR) -lucp -luct -lucs -lucm
 endif
 
-# GAM headers/libs (adjust paths if needed)
-GAM_INC   ?= -I/users/NewB/gam/include
-GAM_LIBS  ?= -L/users/NewB/gam/src -ldsm
+# GAM headers/libs (adjust if needed)
+GAM_ROOT  ?= /users/NewB/gam
+GAM_INC   ?= -I$(GAM_ROOT)/include
+GAM_LIBDIR  ?= $(GAM_ROOT)/src
+# CityHash static lib (adjust if needed)
+CITYHASH_A  ?= $(GAM_ROOT)/lib/libcuckoo/cityhash-1.1.1/src/.libs/libcityhash.a
+
+GAM_LIBS  ?= -L$(GAM_LIBDIR) -ldsm $(GAM_LIBDIR)/libgalloc.a -libverbs -lpthread $(CITYHASH_A) -lboost_thread -lboost_system
 
 CFLAGS  := -Wall -g -D_GNU_SOURCE -std=c11 $(INCDIRS) $(GAM_INC)
-LDFLAGS := $(UCX_LINK) -ldl -lpthread -rdynamic -Wl,--no-as-needed -Wl,-rpath,$(UCX_LIBDIR) $(GAM_LIBS) -lm
+LDFLAGS := -Wl,--start-group $(GAM_LIBS) -Wl,--end-group $(UCX_LINK) -ldl -lpthread -rdynamic -Wl,--no-as-needed -Wl,-rpath,$(UCX_LIBDIR)  -lm
 
 # Where to drop binaries and logs
 BIN_DIR := ../bin
