@@ -24,6 +24,8 @@ static FILE *log_file = NULL;
 static LogLevel log_level = LOG_INFO;
 static int g_rank_context = -1;
 
+static char g_log_path[512] = {0};        //dsm log
+
 static const char *level_str[] = {
     "ERROR", "WARN", "INFO", "DEBUG"
 };
@@ -36,8 +38,11 @@ int log_init(const char *filename, LogLevel level)
         return -1;
     }
     log_level = level;
+    snprintf(g_log_path, sizeof(g_log_path), "%s", filename);
     return 0;
 }
+
+const char* log_get_path(void) { return g_log_path[0] ? g_log_path : NULL; }
 
 void log_finalize(void)
 {
