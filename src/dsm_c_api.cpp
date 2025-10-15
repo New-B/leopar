@@ -10,7 +10,7 @@ extern "C" {
 #include <exception>
 
 // ---- Keep this global so its lifetime covers the whole process ----
-static std::string g_gam_logfile = "/users/NewB/gam/log/dsm.log";
+static std::string g_gam_logfile = "/sharenvme/usershome/wangbo/projects/gam/log/dsm.log";
 
 /* C linkage (unmangled) provided by libdsm.a */
 //extern "C" void dsm_init(const Conf* c);
