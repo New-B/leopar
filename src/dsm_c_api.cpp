@@ -1,6 +1,6 @@
 // src/dsm_c_api.cpp
 #include "dsm_c_api.h"
-
+#include <string>       // for std::string
 extern "C" {
 #include "log.h"
 }
@@ -9,7 +9,9 @@ extern "C" {
 #include <dsm.h>              // 按你真实路径调整：/users/NewB/gam/include/dsm.h
 #include <exception>
 
-static std::string g_gam_logfile;  // must outlive GSM runtime
+// ---- Keep this global so its lifetime covers the whole process ----
+static std::string g_gam_logfile = "/users/NewB/gam/dsm.log";
+
 /* C linkage (unmangled) provided by libdsm.a */
 //extern "C" void dsm_init(const Conf* c);
 // extern "C" void dsm_finalize(void);
@@ -70,15 +72,9 @@ int dsm_init_c(const dsm_conf_c* c) {
             conf.loglevel        = c->loglevel;          // 直接用整型值即可
             conf.timeout         = c->timeout_ms;
             conf.eviction_period = c->eviction_period_ms;
-
-            // use LeoPar's log file for GAM too
-            g_gam_logfile = std::string(log_get_path()) + ".gam";
-            conf.logfile  = &g_gam_logfile;
-
-            // // logfile 指针（std::string*）通常保持默认 nullptr 更安全
-            // // 如果你确实想传日志文件：
-            // static std::string lf; lf = c->logfile; conf.logfile = &lf;
         }
+        // >>> Hardcode GAM log file to an absolute path
+        conf.logfile = &g_gam_logfile;
         epicLog(LOG_INFO, "DSM init: is_master=%d master=%s:%d worker_ip=%s worker_port=%d ",
             (int)conf.is_master, conf.master_ip.c_str(), conf.master_port,
             conf.worker_ip.c_str(), conf.worker_port);

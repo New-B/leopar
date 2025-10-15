@@ -27,7 +27,6 @@ typedef enum {
 int log_init(const char *filename, LogLevel level);
 void log_finalize(void);
 void log_set_rank(int rank);
-const char* log_get_path(void);
 
 /* Core logging function (internal use) */
 void log_msg_internal(LogLevel level, const char *file, int line, const char *fmt, ...);
