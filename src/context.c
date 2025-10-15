@@ -37,7 +37,7 @@ int load_config(const char *filename, int my_rank)
     dsmConf->maxclients         = 1024;
     dsmConf->maxthreads         = 10;
     dsmConf->backlog            = 128;
-    dsmConf->loglevel           = 2;     /* assume LOG_WARNING ~= 2; 可被 ini 覆盖 */
+    dsmConf->loglevel           = 3;     /* assume LOG_DEBUG ~= 2; 可被 ini 覆盖 */
     dsmConf->logfile            = NULL;
     dsmConf->timeout_ms         = 10;
     dsmConf->eviction_period_ms = 100;

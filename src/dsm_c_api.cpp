@@ -75,9 +75,9 @@ int dsm_init_c(const dsm_conf_c* c) {
         }
         // >>> Hardcode GAM log file to an absolute path
         conf.logfile = &g_gam_logfile;
-        epicLog(LOG_INFO, "DSM init: is_master=%d master=%s:%d worker_ip=%s worker_port=%d ",
-            (int)conf.is_master, conf.master_ip.c_str(), conf.master_port,
-            conf.worker_ip.c_str(), conf.worker_port);
+        // epicLog(LOG_INFO, "DSM init: is_master=%d master=%s:%d worker_ip=%s worker_port=%d ",
+        //     (int)conf.is_master, conf.master_ip.c_str(), conf.master_port,
+        //     conf.worker_ip.c_str(), conf.worker_port);
 
         dsm_init(&conf);
         return 0;
