@@ -92,7 +92,14 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
     }
     log_info("Thread table initialized (capacity=%d)", MAX_LOCAL_THREADS);
 
-    /* 8. Optional: synchronize after runtime is fully online
+    /* 8. init dsm */
+    if (dsm_init_c(&g_ctx.dsm_cfg) != 0) {
+        log_warn("DSM init failed; continuing may be unsafe");
+    }
+    log_info("DSM initialized (rank=%d)", g_ctx.rank);
+    ctrl_barrier("dsm_ready", /*gen*/0, 60000);
+
+    /* 9. Optional: synchronize after runtime is fully online
        Only proceed when every node's UCX and dispatcher are ready. */
     if (ctrl_barrier("runtime_ready", /*gen*/1, /*timeout_ms*/0) != 0) {
         log_warn("CTRLm barrier 'runtime_ready' failed; cluster readiness may be inconsistent");
@@ -127,6 +134,7 @@ void leopar_finalize(void)
     }
 
     ctrl_stop();
+    dsm_finalize_c();
 
     /* 4. Close log system */
     log_info("LeoPar runtime finalized at rank %d", g_ctx.rank);

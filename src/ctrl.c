@@ -51,9 +51,9 @@ typedef struct {
 
 /* ---- helpers ------------------------------------------------------------- */
 
-static inline const char* ip_of(int r) {
-    return g_ctx.tcp_cfg.ip_of_rank[r];
-}
+// static inline const char* ip_of(int r) {  //previous definition in context.h
+//     return g_ctx.tcp_cfg.ip_of_rank[r];
+// }
 static inline int world_size(void) { return g_ctx.world_size; }
 static inline int ctrl_port(void)  { return g_ctx.tcp_cfg.base_port + CTRL_PORT_DELTA; }
 

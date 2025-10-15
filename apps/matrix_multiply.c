@@ -326,7 +326,6 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[rank %d] leopar_init failed\n", rank);
         return 1;
     }
-    dsm_init_c(NULL);
 
     int world = leo_world_size();
     if (world <= 0 || world > MAX_RANKS) {
@@ -406,7 +405,6 @@ int main(int argc, char** argv) {
     }
 
 OUT:
-    dsm_finalize_c();
     leopar_finalize();
     return 0;
 }

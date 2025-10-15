@@ -12,8 +12,10 @@
 #ifndef CONTEXT_H
 #define CONTEXT_H
 
+#pragma once
 #include "tcp.h"
 #include "ucx.h"
+#include "dsm_c_api.h"
 
 /* Global runtime context */
 typedef struct {
@@ -24,12 +26,18 @@ typedef struct {
     int default_threads;  /* default threads per process */
 
     tcp_config_t tcp_cfg; /* UCX TCP config */
+
+    /* DSM config captured from cluster.ini */
+    dsm_conf_c     dsm_cfg;
+
     ucx_context_t ucx_ctx;    /* embedded UCX context */
 } leopar_context_t;
 
 
 /* The global context (defined in context.c) */
 extern leopar_context_t g_ctx;
+
+static inline const char* ip_of(int rank) { return g_ctx.tcp_cfg.ip_of_rank[rank]; }
 
 /* Load cluster.ini into g_ctx */
 int load_config(const char *filename, int my_rank);

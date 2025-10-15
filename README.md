@@ -13,3 +13,5 @@ To install UCX (Unified Communication X) on Ubuntu/Debian, run the following com
 sudo apt-get update
 sudo apt-get install -y libucx-dev 
 sudo apt install -y ucx-utils
+sudo apt-get install -y libboost-all-dev  #gam dsm
+sudo apt-get install -y pkg-config
