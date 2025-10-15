@@ -24,7 +24,7 @@ endif
 
 CFLAGS := -Wall -g -D_GNU_SOURCE -std=c11 $(INCDIRS)
 CXXFLAGS  := -O2 -g -fPIC -Wall -Wextra -std=c++17 -I../include 
-DSM_ROOT := /users/NewB/gam
+DSM_ROOT := $(PWD)/../../gam
 DSM_INC  := -I$(DSM_ROOT)/include -I$(DSM_ROOT)/lib/libcuckoo/src
 
 # Sources in this directory

@@ -23,7 +23,7 @@ else
 endif
 
 # GAM headers/libs (adjust if needed)
-GAM_ROOT  ?= /users/NewB/gam
+GAM_ROOT  ?= $(PWD)/../../gam
 GAM_INC   ?= -I$(GAM_ROOT)/include
 GAM_LIBDIR  ?= $(GAM_ROOT)/src
 # CityHash static lib (adjust if needed)
