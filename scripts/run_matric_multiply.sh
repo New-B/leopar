@@ -6,13 +6,16 @@ set -Eeuo pipefail
 
 # ======== 用户可按需修改的配置 ========
 # 需要遍历的节点规模（与 conf/cluster*.ini 对应）
-NODE_SCALES=(2 4 8 16)
+# NODE_SCALES=(2 4 8 16)
+NODE_SCALES=(2)
 
 # 每个节点上的线程规模
-THREADS_PER_NODE_SET=(2 4 8 16 28)
+# THREADS_PER_NODE_SET=(2 4 8 16 28)
+THREADS_PER_NODE_SET=(2)
 
 # 计算的方阵规模
-M_SIZES=(1024 2048 4096)
+# M_SIZES=(1024 2048 4096)
+M_SIZES=(1024)
 
 # 配置文件前缀与目录
 CONF_DIR="conf"
