@@ -250,9 +250,9 @@ int mm_dir3_build_on_rank0(const int dims,
     //     log_warn("ctrl_put_u64(mm_dir3) failed (others may not find dir)");
     //     /* still return success, caller may handle */
     // }
-    if (ctrl_barrier("mm_dir3_ready", /*gen=*/0, /*to=*/60000) != 0) {
-        log_warn("barrier mm_dir3_ready failed");
-    }
+    // if (ctrl_barrier("mm_dir3_ready", /*gen=*/0, /*to=*/60000) != 0) {
+    //     log_warn("barrier mm_dir3_ready failed");
+    // }
 
     *out_dir_gaddr = dir_gaddr;
     return 0;
@@ -279,14 +279,15 @@ int main(int argc, char** argv) {
             mm_dir3_build_on_rank0(matrix_size[i], /*seed=*/12345u, /*out*/&dir_gaddr);
         }
         
-        
+        leopar_finalize();
     } else {
-        sleep(1); // ensure rank 0 prints first
+        log_info("mm.c: leopar_init ok: rank %d", my_rank);
+        sleep(5); // ensure rank 0 prints first
+        leopar_finalize();
     }
 
     //int world_size = leo_world_size();
 
-    leopar_finalize();
     return 0;
 
 
