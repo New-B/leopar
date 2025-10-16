@@ -274,8 +274,10 @@ int main(int argc, char** argv) {
     int world_size = leo_world_size();
     int matrix_size[] = {1024, 2048, 4096};
     if(my_rank == 0) {
+        log_info("mm.c: leopar_init ok: rank %d", my_rank);
         GAddr dir_gaddr = 0;
         for(int i = 0; i < sizeof(matrix_size)/sizeof(matrix_size[0]); i++) {
+            log_info("mm.c: Building matrices of size %dx%d", matrix_size[i], matrix_size[i]);
             mm_dir3_build_on_rank0(matrix_size[i], /*seed=*/12345u, /*out*/&dir_gaddr);
         }
         
@@ -285,10 +287,5 @@ int main(int argc, char** argv) {
         sleep(80); // ensure rank 0 prints first
         leopar_finalize();
     }
-
-    //int world_size = leo_world_size();
-
     return 0;
-
-
 }
