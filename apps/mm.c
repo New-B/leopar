@@ -166,9 +166,9 @@ int mm_dir3_build_on_rank0(const int dims,
         const size_t Bsz = dims * dims * elem;
         const size_t Csz = rows * dims * elem;
 
-        GAddr A = dsm_malloc_c((Size)Asz, /*owner=*/r);
-        GAddr B = dsm_malloc_c((Size)Bsz, /*owner=*/r);
-        GAddr C = dsm_malloc_c((Size)Csz, /*owner=*/r);
+        GAddr A = dsm_malloc_c((Size)Asz, /*owner=*/r + 1);
+        GAddr B = dsm_malloc_c((Size)Bsz, /*owner=*/r + 1);
+        GAddr C = dsm_malloc_c((Size)Csz, /*owner=*/r + 1);
         if (!A || !B || !C) {
             log_error("DSM alloc failed on r=%d (A=%#lx B=%#lx C=%#lx)", r,
                       (unsigned long)A,(unsigned long)B,(unsigned long)C);
