@@ -23,15 +23,15 @@ else
 endif
 
 # GAM headers/libs (adjust if needed)
-GAM_ROOT  ?= $(PWD)/../../gam
-GAM_INC   ?= -I$(GAM_ROOT)/include
-GAM_LIBDIR  ?= $(GAM_ROOT)/src
+DSM_ROOT  ?= $(PWD)/../../farm
+DSM_INC   ?= -I$(DSM_ROOT)/include
+DSM_LIBDIR  ?= $(DSM_ROOT)/src
 # CityHash static lib (adjust if needed)
-CITYHASH_A  ?= $(GAM_ROOT)/lib/libcuckoo/cityhash-1.1.1/src/.libs/libcityhash.a
+CITYHASH_A  ?= $(DSM_ROOT)/lib/libcuckoo/cityhash-1.1.1/src/.libs/libcityhash.a
 
-GAM_LIBS  ?= -L$(GAM_LIBDIR) -ldsm $(GAM_LIBDIR)/libgalloc.a -libverbs -lpthread $(CITYHASH_A) -lboost_thread -lboost_system
+GAM_LIBS  ?= -L$(DSM_LIBDIR) -lpgas $(DSM_LIBDIR)/libgalloc.a -libverbs -lpthread #$(CITYHASH_A) -lboost_thread -lboost_system
 
-CFLAGS  := -Wall -g -D_GNU_SOURCE -std=c11 $(INCDIRS) $(GAM_INC)
+CFLAGS  := -Wall -g -D_GNU_SOURCE -std=c11 $(INCDIRS) $(DSM_INC)
 LDFLAGS := -Wl,--start-group $(GAM_LIBS) -Wl,--end-group $(UCX_LINK) -ldl -lpthread -rdynamic -Wl,--no-as-needed -Wl,-rpath,$(UCX_LIBDIR)  -lm
 
 BIN_DIR := ../bin

@@ -6,7 +6,8 @@ extern "C" {
 }
 
 // 这里包含 GAM 的 C++ 头，而不是在 C 源里包含
-#include <dsm.h>              // 按你真实路径调整：/users/NewB/gam/include/dsm.h
+// #include <dsm.h>              // 按你真实路径调整：/users/NewB/gam/include/dsm.h
+#include "pgasapi.h"
 #include <exception>
 
 // ---- Keep this global so its lifetime covers the whole process ----
@@ -55,11 +56,11 @@ int dsm_init_c(const dsm_conf_c* c) {
             conf.is_master       = (c->is_master != 0);
             conf.master_port     = c->master_port;
             if (c->master_ip)       conf.master_ip       = c->master_ip;
-            if (c->master_bindaddr) conf.master_bindaddr = c->master_bindaddr;
+            // if (c->master_bindaddr) conf.master_bindaddr = c->master_bindaddr;
 
             conf.worker_port     = c->worker_port;
             if (c->worker_ip)       conf.worker_ip       = c->worker_ip;
-            if (c->worker_bindaddr) conf.worker_bindaddr = c->worker_bindaddr;
+            // if (c->worker_bindaddr) conf.worker_bindaddr = c->worker_bindaddr;
 
             conf.size            = (unsigned long)c->size;
             conf.ghost_th        = (unsigned long)c->ghost_th;
@@ -71,7 +72,8 @@ int dsm_init_c(const dsm_conf_c* c) {
             conf.backlog         = c->backlog;
             conf.loglevel        = c->loglevel;          // 直接用整型值即可
             conf.timeout         = c->timeout_ms;
-            conf.eviction_period = c->eviction_period_ms;
+            // conf.eviction_period = c->eviction_period_ms;
+
         }
         // >>> Hardcode GAM log file to an absolute path
         conf.logfile = &g_gam_logfile;
@@ -79,7 +81,8 @@ int dsm_init_c(const dsm_conf_c* c) {
         //     (int)conf.is_master, conf.master_ip.c_str(), conf.master_port,
         //     conf.worker_ip.c_str(), conf.worker_port);
 
-        dsm_init(&conf);
+        // dsm_init(&conf);
+        InitSystem(&conf); // redundant but safe
         return 0;
     } catch (...) {
         return -1;
