@@ -100,6 +100,7 @@ static inline const int* mm_dir3_row0_c(const mm_dir3_t* d) {
 static inline const int* mm_dir3_row1_c(const mm_dir3_t* d) {
     return mm_dir3_row0_c(d) + d->world_size;
 }
+static inline int gam_node_id_from_rank(int r) { return r + 1; }
 
 /* simple block-row partition */
 static void compute_rows(int M, int world_size, int rank, int* row0, int* row1) {
@@ -137,6 +138,7 @@ int mm_dir3_build_on_rank0(const int dims,
 
     /* 1) prepare directory blob in host memory (header + packed arrays) */
     const size_t dir_bytes = mm_dir3_total_bytes((uint32_t)W);
+    log_debug("memory size of directory on local rank0: %d", dir_bytes);
     mm_dir3_t* dir = (mm_dir3_t*)malloc(dir_bytes);
     if (!dir) { log_error("OOM dir host blob"); return -1; }
     memset(dir, 0, dir_bytes);
@@ -166,9 +168,14 @@ int mm_dir3_build_on_rank0(const int dims,
         const size_t Bsz = dims * dims * elem;
         const size_t Csz = rows * dims * elem;
 
-        GAddr A = dsm_malloc_c((Size)Asz, /*owner=*/r + 1);
-        GAddr B = dsm_malloc_c((Size)Bsz, /*owner=*/r + 1);
-        GAddr C = dsm_malloc_c((Size)Csz, /*owner=*/r + 1);
+        int owner = gam_node_id_from_rank(r);
+
+        GAddr A = dsm_malloc_c((Size)Asz, /*owner=*/owner);
+        log_debug("after matex A, before matrix B on node %d, rank %d", r+1,r);
+        GAddr B = dsm_malloc_c((Size)Bsz, /*owner=*/owner);
+        GAddr C = dsm_malloc_c((Size)Csz, /*owner=*/owner);
+        log_debug("mm_dir3: dsm_malloc r=%d A=%#lx B=%#lx C=%#lx", r,
+                  (unsigned long)A,(unsigned long)B,(unsigned long)C);
         if (!A || !B || !C) {
             log_error("DSM alloc failed on r=%d (A=%#lx B=%#lx C=%#lx)", r,
                       (unsigned long)A,(unsigned long)B,(unsigned long)C);
@@ -271,10 +278,24 @@ int main(int argc, char** argv) {
         fprintf(stderr, "leopar_init failed\n");
         return 1;
     }
-    int world_size = leo_world_size();
+    //int world_size = leo_world_size();
     int matrix_size[] = {1024, 2048, 4096};
     if(my_rank == 0) {
         log_info("mm.c: leopar_init ok: rank %d", my_rank);
+        int self = gam_node_id_from_rank(leo_rank());
+        GAddr probe = dsm_malloc_c(4096, self);
+        if (!probe) { log_error("DSM self-alloc failed on rank=%d", leo_rank()); return -1; }
+
+        char z[64] = {0};
+        if (dsm_write_c(probe, z, sizeof z) != 0) {
+            log_error("DSM self-write failed on rank=%d", leo_rank()); return -1;
+        }
+        dsm_free_c(probe);
+
+        if (ctrl_barrier("dsm_srv_ready", /*gen=*/2, /*timeout_ms=*/60000) != 0) {
+            log_error("CTRL barrier 'dsm_srv_ready' failed"); return -1;
+        }
+
         GAddr dir_gaddr = 0;
         for(int i = 0; i < sizeof(matrix_size)/sizeof(matrix_size[0]); i++) {
             log_info("mm.c: Building matrices of size %dx%d", matrix_size[i], matrix_size[i]);
@@ -284,6 +305,20 @@ int main(int argc, char** argv) {
         leopar_finalize();
     } else {
         log_info("mm.c: leopar_init ok: rank %d", my_rank);
+        int self = gam_node_id_from_rank(leo_rank());
+        GAddr probe = dsm_malloc_c(4096, self);
+        if (!probe) { log_error("DSM self-alloc failed on rank=%d", leo_rank()); return -1; }
+
+        char z[64] = {0};
+        if (dsm_write_c(probe, z, sizeof z) != 0) {
+            log_error("DSM self-write failed on rank=%d", leo_rank()); return -1;
+        }
+        dsm_free_c(probe);
+
+        if (ctrl_barrier("dsm_srv_ready", /*gen=*/2, /*timeout_ms=*/60000) != 0) {
+            log_error("CTRL barrier 'dsm_srv_ready' failed"); return -1;
+        }
+
         sleep(80); // ensure rank 0 prints first
         leopar_finalize();
     }
