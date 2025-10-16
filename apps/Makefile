@@ -40,7 +40,7 @@ LOG_DIR := ../logs
 LEOPAR_LIB := ../src/libleopar.a
 
 # Apps list
-APPS := matrix_multiply
+APPS := matrix_multiply mm
 
 APP_SRCS := $(addsuffix .c,$(APPS))
 APP_OBJS := $(APP_SRCS:.c=.o)
