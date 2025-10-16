@@ -39,7 +39,7 @@ echo "  -> Starting rank 0 locally"
   cd "$ROOT" && mkdir -p logs && : > "$LOGFILE" && \
   echo -n "" > "$ROOT/../gam/log/dsm.log" && \
   #nohup "$BIN" "$CONFIG" 0 "$LOGFILE" >>"$LOGFILE" 2>&1 & 
-  nohup "$BIN" "$CONFIG" 0 1024 2 "$LOGFILE" >>"$LOGFILE" 2> "$LOGFILE_ERR" &
+  nohup "$BIN" "$CONFIG" 0 "$LOGFILE" >>"$LOGFILE" 2> "$LOGFILE_ERR" &
 )
 
 for (( RANK=1; RANK<$WORLD_SIZE; RANK++ )); do
@@ -56,7 +56,7 @@ for (( RANK=1; RANK<$WORLD_SIZE; RANK++ )); do
 
 ssh -n "$HOST" "cd $ROOT && mkdir -p logs && : > '$LOGFILE' && \
   echo -n "" > "$ROOT/../gam/log/dsm.log" && \
-  nohup $BIN '$CONFIG' $RANK 1024 2 '$LOGFILE' >>'$LOGFILE' 2> "$LOGFILE_ERR" & "\
+  nohup $BIN '$CONFIG' $RANK '$LOGFILE' >>'$LOGFILE' 2> "$LOGFILE_ERR" & "\
   || { echo "  !! SSH/launch failed on $HOST (rank $RANK)"; }
 done
 
