@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
         leopar_finalize();
     } else {
         log_info("mm.c: leopar_init ok: rank %d", my_rank);
-        sleep(5); // ensure rank 0 prints first
+        sleep(80); // ensure rank 0 prints first
         leopar_finalize();
     }
 
