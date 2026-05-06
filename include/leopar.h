@@ -61,9 +61,25 @@ int leo_thread_create_named(leo_thread_t *thread,
         void *arg,
         int target_rank);
 
+/* Explicit by-value variant.
+ * The runtime copies arg[arg_len] into a private buffer before returning.
+ * The worker may treat its argument as a heap-owned copy and free() it.
+ */
+int leo_thread_create_copy_named(leo_thread_t *thread,
+        const pthread_attr_t *attr,
+        void *(*start_routine)(void*),
+        const char *func_name,
+        const void *arg,
+        size_t arg_len,
+        int target_rank);
+
 /* User-facing macro: preserves pthread-style callsite, captures name string */
 #define leo_thread_create(thread, attr, fn, arg, rank) \
         leo_thread_create_named(thread, attr, (void*(*)(void*))(fn), #fn, arg, rank)
+
+#define leo_thread_create_copy(thread, attr, fn, arg_ptr, rank) \
+        leo_thread_create_copy_named(thread, attr, (void*(*)(void*))(fn), #fn, \
+                                     (const void*)(arg_ptr), sizeof(*(arg_ptr)), rank)
 
 /* Join a (possibly remote) thread; returns 0 when the remote execution has completed. */
 int leo_thread_join(leo_thread_t thread, void **retval);
@@ -156,4 +172,3 @@ typedef struct {
 #endif
         
 #endif /* LEOPAR_H */
-

@@ -20,6 +20,7 @@ typedef struct {
 
 static void* pf_worker(void *vp) {
     pf_ctx_t p = *(pf_ctx_t*)vp;
+    free(vp);
     for (size_t i = p.begin; i < p.end; ++i) {
         p.body(i, p.ctx);
     }
@@ -45,7 +46,7 @@ int leo_parallel_for(size_t begin, size_t end, size_t grain,
     for (size_t c = 0; c < nchunks; ++c) {
         size_t e = b + grain; if (e > end) e = end;
         pf_ctx_t arg = { .begin=b, .end=e, .grain=grain, .body=body, .ctx=ctx };
-        int rc = leo_thread_create(&tids[c], NULL, pf_worker, &arg, target_rank_hint);
+        int rc = leo_thread_create_copy(&tids[c], NULL, pf_worker, &arg, target_rank_hint);
         if (rc) { free(tids); return rc; }
         b = e;
     }
@@ -68,7 +69,7 @@ int leo_spawn_many(size_t n,
     if (!tids || !fns || n == 0) return -1;
     for (size_t i = 0; i < n; ++i) {
         int tr = (target_ranks ? target_ranks[i] : -1);
-        int rc = leo_thread_create((leothread_t*)&tids[i], NULL, fns[i], (args ? args[i] : NULL), tr);
+        int rc = leo_thread_create(&tids[i], NULL, fns[i], (args ? args[i] : NULL), tr);
         if (rc) return rc;
     }
     return 0;
@@ -79,7 +80,7 @@ int leo_wait_all(size_t n, const leo_thread_t *tids)
     if (!tids) return -1;
     int rc_all = 0;
     for (size_t i = 0; i < n; ++i) {
-        int rc = leo_thread_join((leothread_t)tids[i], NULL);
+        int rc = leo_thread_join(tids[i], NULL);
         if (rc && rc_all == 0) rc_all = rc;
     }
     return rc_all;
@@ -92,7 +93,7 @@ int leo_wait_any(size_t n, const leo_thread_t *tids, size_t *index_ready)
     /* Minimal prototype: linearly try join with short timeouts. */
     for (;;) {
         for (size_t i = 0; i < n; ++i) {
-            int rc = leo_thread_join_timeout((leothread_t)tids[i], NULL, /*ms*/1);
+            int rc = leo_thread_join_timeout(tids[i], NULL, /*ms*/1);
             if (rc == 0) { *index_ready = i; return 0; }
         }
         /* Backoff – in a real impl use a completion queue to avoid spinning. */

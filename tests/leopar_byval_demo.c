@@ -103,11 +103,11 @@ int main(int argc, char **argv)
 
             log_debug("[rank0] creating task %d on rank %d with args=[%d,%d)", t, target_rank, a->start, a->end);
 
-            int rc = leo_thread_create(&tids[t],
-                                    /*attr=*/NULL,
-                                    worker_sum,
-                                    /*arg(by value)*/ a,
-                                    /*target*/ target_rank);
+            int rc = leo_thread_create_copy(&tids[t],
+                                         /*attr=*/NULL,
+                                         worker_sum,
+                                         /*arg(by value)*/ a,
+                                         /*target*/ target_rank);
             if (rc != 0) {
                 log_error("leo_thread_create failed at t=%d (rc=%d)\n", t, rc);
                 free(a);

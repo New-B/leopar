@@ -151,6 +151,7 @@ int threadtable_alloc(void)
 int threadtable_spawn(int local_tid,
                       void *(*start_routine)(void*),
                       void *arg,
+                      size_t arg_len,
                       uint64_t gtid,
                       int creator_rank)
 {
@@ -160,6 +161,7 @@ int threadtable_spawn(int local_tid,
     pthread_mutex_lock(&slot->mu);
     slot->start_routine = start_routine;
     slot->arg_buf = arg;
+    slot->arg_len = arg_len;
     slot->gtid = gtid;
     slot->creator_rank = creator_rank;
     slot->state = LEO_THREAD_CREATED;

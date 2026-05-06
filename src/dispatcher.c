@@ -138,7 +138,7 @@ static void handle_create_req(const void *buf, size_t len, uint32_t src_rank)
     }
 
     ack.gtid = LEO_TID_MAKE(g_ctx.rank, tid);
-    if (threadtable_spawn(tid, fn, arg_copy, ack.gtid, (int)src_rank) != 0) {
+    if (threadtable_spawn(tid, fn, arg_copy, req->arg_len, ack.gtid, (int)src_rank) != 0) {
         log_error("Failed to spawn remote thread tid=%d func_id=%u", tid, req->func_id);
         ack.status = -1;
         (void)threadtable_reclaim(tid);

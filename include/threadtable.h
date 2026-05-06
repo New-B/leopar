@@ -67,6 +67,7 @@ int threadtable_alloc(void);
 int threadtable_spawn(int local_tid,
                       void *(*start_routine)(void*),
                       void *arg,
+                      size_t arg_len,
                       uint64_t gtid,
                       int creator_rank);
 int threadtable_wait_local(int local_tid, void **retval, int64_t timeout_ms);

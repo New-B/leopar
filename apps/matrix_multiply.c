@@ -288,7 +288,7 @@ static void launch_workers_and_wait(int world, int threads_per_node, const Regis
 
             a->btile = BTILE;
 
-            int rc = leo_thread_create(&ths[idx], NULL, worker_matmul, a, r);
+            int rc = leo_thread_create_copy(&ths[idx], NULL, worker_matmul, a, r);
             if (rc != 0) {
                 fprintf(stderr, "create worker failed for rank=%d (rc=%d)\n", r, rc);
                 free(a);

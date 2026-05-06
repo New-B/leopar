@@ -12,6 +12,7 @@
 /* user function */
 void* worker(void *arg) {
     int v = *(int*)arg;
+    free(arg);
     log_info("Hello from worker, arg=%d", v);
     sleep(1);
     return NULL;
@@ -38,7 +39,7 @@ int main(int argc, char **argv)
 
     if (rank == 0) {
         /* like pthread_create */
-        leo_thread_create(&tid, NULL, worker, &arg, 1);  // force on rank 1
+        leo_thread_create_copy(&tid, NULL, worker, &arg, 1);  // force on rank 1
         leo_thread_join(tid, NULL);
         log_info("joined remote worker");
     }

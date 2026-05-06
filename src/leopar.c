@@ -34,6 +34,119 @@
 /* ---- Tag helpers: hi32=opcode, lo32=rank ---- */
 #define TAG_MAKE(op, rank)     ((((uint64_t)(op)) << 32) | (uint32_t)(rank))
 #define TAG_MASK_OPCODE 0xFFFFFFFF00000000ULL
+
+static int leo_thread_create_impl(leo_thread_t *thread,
+                                  const pthread_attr_t *attr,
+                                  void *(*start_routine)(void*),
+                                  const char *func_name,
+                                  const void *arg,
+                                  size_t arg_len,
+                                  int target_rank,
+                                  int copy_arg)
+{
+    (void)attr; /* not used in this prototype */
+
+    int func_id = functable_get_id_by_ptr(start_routine);
+    if (func_id < 0) {
+        func_id = functable_register(func_name, start_routine);
+        if (func_id < 0) {
+            log_error("functable_register failed for %s", func_name);
+            return -1;
+        }
+    }
+    log_debug("leo_thread_create_impl: func_name=%s func_id=%d", func_name, func_id);
+
+    int dest_rank = (target_rank >= 0) ? target_rank : scheduler_choose_rank(g_ctx.world_size);
+    if (dest_rank >= g_ctx.world_size) dest_rank %= g_ctx.world_size;
+    log_debug("leo_thread_create_impl: chosen target rank=%d copy_arg=%d arg_len=%zu",
+              dest_rank, copy_arg, arg_len);
+
+    if (dest_rank == g_ctx.rank) {
+        int tid = threadtable_alloc();
+        if (tid < 0) {
+            log_error("Thread table full at rank=%d", g_ctx.rank);
+            return -1;
+        }
+
+        void *spawn_arg = (void*)arg;
+        if (copy_arg && arg_len > 0) {
+            spawn_arg = malloc(arg_len);
+            if (!spawn_arg) {
+                (void)threadtable_reclaim(tid);
+                return -1;
+            }
+            memcpy(spawn_arg, arg, arg_len);
+        }
+
+        uint64_t gtid = LEO_TID_MAKE(g_ctx.rank, tid);
+        if (threadtable_spawn(tid, start_routine, spawn_arg, arg_len, gtid, g_ctx.rank) != 0) {
+            log_error("Failed to spawn local LeoPar thread tid=%d", tid);
+            if (copy_arg && arg_len > 0) free(spawn_arg);
+            (void)threadtable_reclaim(tid);
+            return -1;
+        }
+
+        if (thread) *thread = gtid;
+        return 0;
+    }
+
+    const size_t name_len = strlen(func_name);
+    const size_t msg_len = sizeof(msg_create_req_t) + name_len + arg_len;
+    char *msg_buf = (char*)malloc(msg_len);
+    if (!msg_buf) return -1;
+
+    msg_create_req_t *req = (msg_create_req_t*)msg_buf;
+    req->opcode       = OP_CREATE_REQ;
+    req->creator_rank = (uint32_t)g_ctx.rank;
+    req->func_id      = (uint32_t)func_id;
+    req->arg_len      = (uint32_t)arg_len;
+    req->name_len     = (uint32_t)name_len;
+    req->gtid         = 0;
+
+    size_t off = sizeof(*req);
+    memcpy(msg_buf + off, func_name, name_len);
+    off += name_len;
+    if (arg_len > 0 && arg) {
+        memcpy(msg_buf + off, arg, arg_len);
+    }
+
+    if (ucx_send_bytes(dest_rank, msg_buf, msg_len, OP_CREATE_REQ) != 0) {
+        log_error("Failed to send create request to rank=%d", dest_rank);
+        free(msg_buf);
+        return -1;
+    }
+    free(msg_buf);
+
+    while (1) {
+        size_t len=0; ucp_tag_t tag=0; ucp_tag_recv_info_t info;
+        void *ack_buf = ucx_recv_any_alloc(&len, &tag, &info);
+        if (!ack_buf) continue;
+
+        uint32_t opcode = (uint32_t)(tag >> 32);
+        uint32_t src    = (uint32_t)(tag & 0xffffffffu);
+
+        if (opcode == OP_CREATE_ACK &&
+            src == (uint32_t)dest_rank &&
+            len >= sizeof(msg_create_ack_t)) {
+
+            msg_create_ack_t *ack = (msg_create_ack_t*)ack_buf;
+            if (ack->status == 0) {
+                if (thread) *thread = (leo_thread_t)ack->gtid;
+                free(ack_buf);
+                break;
+            }
+
+            log_error("CREATE_ACK failed status=%d from rank=%d", (int)ack->status, dest_rank);
+            free(ack_buf);
+            return -1;
+        }
+
+        free(ack_buf);
+    }
+
+    log_info("Sent thread create request func_id=%d to rank=%d", func_id, dest_rank);
+    return 0;
+}
  
 /* -------------------- Public API -------------------- */
 /* 
@@ -154,104 +267,24 @@ int leo_thread_create_named(leo_thread_t *thread,
                             void *arg,
                             int target_rank)
 {
-    (void)attr; /* not used in this prototype */
+    return leo_thread_create_impl(thread, attr, start_routine, func_name,
+                                  arg, (arg ? sizeof(void*) : 0),
+                                  target_rank, /*copy_arg=*/0);
+}
 
-    /* 1.Ensure a global func_id locally (dynamic registration) */
-    int func_id = functable_get_id_by_ptr(start_routine);
-    if (func_id < 0) {
-        func_id = functable_register(func_name, start_routine);
-        if (func_id < 0) {
-            log_error("functable_register failed for %s", func_name);
-            return -1;
-        }
+int leo_thread_create_copy_named(leo_thread_t *thread,
+                                 const pthread_attr_t *attr,
+                                 void *(*start_routine)(void*),
+                                 const char *func_name,
+                                 const void *arg,
+                                 size_t arg_len,
+                                 int target_rank)
+{
+    if ((arg_len > 0 && !arg) || arg_len > UINT32_MAX) {
+        return -1;
     }
-    log_debug("leo_thread_create_named: func_name=%s func_id=%d", func_name, func_id);
-
-    /* 2.Choose target rank */
-    int dest_rank = (target_rank >= 0) ? target_rank : scheduler_choose_rank(g_ctx.world_size);
-    if (dest_rank >= g_ctx.world_size) dest_rank %= g_ctx.world_size;
-    log_debug("leo_thread_create_named: chosen target rank=%d", dest_rank);
-
-    /* 3.Build CREATE_REQ with name + arg */
-    size_t name_len = strlen(func_name);
-    size_t arg_len  = sizeof(void*); /* TODO: real serialization */
-    size_t msg_len  = sizeof(msg_create_req_t) + name_len + arg_len;
-
-    /* 4. Local execution if target_rank == my_rank */
-    if (dest_rank == g_ctx.rank){
-        int tid = threadtable_alloc();
-        if (tid < 0) {
-            log_error("Thread table full at rank=%d", g_ctx.rank);
-            return -1;
-        }
-
-        uint64_t gtid = LEO_TID_MAKE(g_ctx.rank, tid);
-        if (threadtable_spawn(tid, start_routine, arg, gtid, g_ctx.rank) != 0) {
-            log_error("Failed to spawn local LeoPar thread tid=%d", tid);
-            (void)threadtable_reclaim(tid);
-            return -1;
-        }
-
-        if (thread) *thread = gtid;
-        log_debug("leo_thread_create_named: Created local thread tid=%d for func_id=%d", tid, func_id);
-        return 0;
-    } else {
-        char *msg_buf = (char*)malloc(msg_len);
-        if (!msg_buf) return -1;
-
-        msg_create_req_t *req = (msg_create_req_t*)msg_buf;
-        req->opcode       = OP_CREATE_REQ;
-        req->creator_rank = (uint32_t)g_ctx.rank;
-        req->func_id      = (uint32_t)func_id;
-        req->arg_len      = (uint32_t)arg_len;
-        req->name_len     = (uint32_t)name_len;
-        req->gtid         = 0;
-
-        size_t off = sizeof(*req);
-        memcpy(msg_buf + off, func_name, name_len); off += name_len;
-        memcpy(msg_buf + off, &arg, arg_len);       off += arg_len;
-
-        /* 5. Remote execution via UCX */
-        if (ucx_send_bytes(dest_rank, msg_buf, msg_len, OP_CREATE_REQ) != 0) {
-            log_error("Failed to send create request to rank=%d", dest_rank);
-            free(msg_buf);
-            return -1;
-        }
-        free(msg_buf);
-
-        /* 6) Wait for CREATE_ACK from target */
-        while (1) {
-            size_t len=0; ucp_tag_t tag=0; ucp_tag_recv_info_t info;
-            void *ack_buf = ucx_recv_any_alloc(&len, &tag, &info);
-            if (!ack_buf) continue;
-
-            uint32_t opcode = (uint32_t)(tag >> 32);
-            uint32_t src    = (uint32_t)(tag & 0xffffffffu);
-
-            if (opcode == OP_CREATE_ACK &&
-                src == (uint32_t)dest_rank && 
-                len >= sizeof(msg_create_ack_t)) {
-
-                msg_create_ack_t *ack = (msg_create_ack_t*)ack_buf;
-                if (ack->status == 0) {
-                    if (thread) *thread = (leo_thread_t)ack->gtid;
-                    log_info("CREATE_ACK ok from rank=%d: gtid=%" PRIu64, dest_rank, ack->gtid);
-                    free(ack_buf);
-                    break;
-                } else {
-                    log_error("CREATE_ACK failed status=%d from rank=%d", (int)ack->status, dest_rank);
-                    free(ack_buf);
-                    return -1;
-                }
-            }
-
-            /* Non-matching message: let dispatcher handle or drop; we free here to keep simple */
-            free(ack_buf);
-        }
-    }
-    log_info("Sent thread create request func_id=%d to rank=%d", func_id, target_rank);
-
-    return 0;
+    return leo_thread_create_impl(thread, attr, start_routine, func_name,
+                                  arg, arg_len, target_rank, /*copy_arg=*/1);
 }
 
 /* ===== leo_thread_join (pthread-style) ===== */
@@ -362,7 +395,5 @@ int leo_thread_join(leo_thread_t thread, void **retval)
     }
 
 }
-
-
 
 
