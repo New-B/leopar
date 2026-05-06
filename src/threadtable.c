@@ -10,6 +10,7 @@
 #include "proto.h"
 #include "ucx.h"
 #include "context.h"
+#include "scheduler.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -89,6 +90,19 @@ static void* thread_start_main(void *vp)
 
     const int had_waiters = (waiters != NULL);
     notify_remote_waiters(local_tid, gtid, waiters);
+
+    if (creator_rank == g_ctx.rank) {
+        scheduler_note_completion(g_ctx.rank);
+    } else if (creator_rank >= 0) {
+        msg_exit_notify_t note = {
+            .opcode = OP_EXIT_NOTIFY,
+            .gtid = gtid
+        };
+        if (ucx_send_bytes(creator_rank, &note, sizeof(note), OP_EXIT_NOTIFY) != 0) {
+            log_warn("Failed to send EXIT_NOTIFY for gtid=%" PRIu64 " to rank=%d",
+                     gtid, creator_rank);
+        }
+    }
 
     if (creator_rank >= 0 && creator_rank != g_ctx.rank && had_waiters) {
         threadtable_reclaim(local_tid);

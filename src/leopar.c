@@ -86,6 +86,7 @@ static int leo_thread_create_impl(leo_thread_t *thread,
             return -1;
         }
 
+        scheduler_note_placement(dest_rank);
         if (thread) *thread = gtid;
         return 0;
     }
@@ -131,6 +132,7 @@ static int leo_thread_create_impl(leo_thread_t *thread,
 
             msg_create_ack_t *ack = (msg_create_ack_t*)ack_buf;
             if (ack->status == 0) {
+                scheduler_note_placement(dest_rank);
                 if (thread) *thread = (leo_thread_t)ack->gtid;
                 free(ack_buf);
                 break;
@@ -395,5 +397,4 @@ int leo_thread_join(leo_thread_t thread, void **retval)
     }
 
 }
-
 

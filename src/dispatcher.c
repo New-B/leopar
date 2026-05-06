@@ -15,6 +15,7 @@
 #include "ucx.h"
 #include "functable.h"
 #include "threadtable.h"
+#include "scheduler.h"
 #include "log.h"
 #include "tid.h"
 
@@ -225,8 +226,15 @@ void dispatch_msg(void *buf, size_t len, ucp_tag_t tag)
         case OP_CREATE_REQ: handle_create_req(buf, len, src_rank); break;
         case OP_JOIN_REQ:   handle_join_req(buf, len, src_rank);   break;
         case OP_EXIT_NOTIFY:
-            /* 这里可补：更新元数据/回收资源/转发通知等 */
-            log_info("EXIT_NOTIFY received (len=%zu) from rank=%u", len, src_rank);
+            if (len >= sizeof(msg_exit_notify_t)) {
+                const msg_exit_notify_t *note = (const msg_exit_notify_t*)buf;
+                const int owner = LEO_TID_RANK(note->gtid);
+                scheduler_note_completion(owner);
+                log_info("EXIT_NOTIFY received for gtid=%" PRIu64 " from rank=%u",
+                         note->gtid, src_rank);
+            } else {
+                log_warn("EXIT_NOTIFY too short (len=%zu) from rank=%u", len, src_rank);
+            }
             break;
         case OP_CREATE_ACK:
         case OP_JOIN_RESP:

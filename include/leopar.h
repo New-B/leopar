@@ -151,6 +151,17 @@ int leo_thread_create_attr_named(leo_thread_t *thread,
 #define leo_thread_create_attr(thread, attr, fn, arg) \
 leo_thread_create_attr_named(thread, (attr), (void*(*)(void*))(fn), #fn, (arg))
 
+int leo_thread_create_copy_attr_named(leo_thread_t *thread,
+                                      const leo_attr_t *attr,
+                                      void *(*start_routine)(void*),
+                                      const char *func_name,
+                                      const void *arg,
+                                      size_t arg_len);
+
+#define leo_thread_create_copy_attr(thread, attr, fn, arg_ptr) \
+leo_thread_create_copy_attr_named(thread, (attr), (void*(*)(void*))(fn), #fn, \
+                                  (const void*)(arg_ptr), sizeof(*(arg_ptr)))
+
 /* ---------- NEW: Runtime query & stats ---------- */
 int leo_world_size(void);  /* equals g_ctx.world_size */
 int leo_rank(void);        /* equals g_ctx.rank */
