@@ -18,6 +18,7 @@
 #include "scheduler.h"
 #include "log.h"
 #include "tid.h"
+#include "query.h"
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -86,6 +87,7 @@ static void handle_func_announce(const void *buf, size_t len, uint32_t src_rank)
 /*  ---- handle_create_req: no cold-start here, rely on announce ---- */
 static void handle_create_req(const void *buf, size_t len, uint32_t src_rank)
 {
+    leo_stats_note_create_recv();
     if (len < sizeof(msg_create_req_t)) {
         log_error("CREATE_REQ too short (len=%zu)", len);
         return;
@@ -157,6 +159,7 @@ static void handle_create_req(const void *buf, size_t len, uint32_t src_rank)
 /* ----------- internal：handle JOIN_REQ ----------- */
 static void handle_join_req(const void *buf, size_t len, uint32_t src_rank)
 {
+    leo_stats_note_join_recv();
     if (len < sizeof(msg_join_req_t)) {
         log_error("JOIN_REQ too short (len=%zu)", len);
         return;

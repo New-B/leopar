@@ -171,9 +171,12 @@ typedef struct {
     uint64_t joins_sent, joins_recv;
     uint64_t bytes_ctrl_tx, bytes_ctrl_rx; /* best-effort */
     uint64_t scheduler_rr, scheduler_hint, scheduler_locality;
+    uint64_t scheduler_locality_hit, scheduler_locality_miss;
+    uint64_t scheduler_load_escape;
 } leo_stats_t;
     
     int leo_stats_get(leo_stats_t *s);
+    int leo_stats_reset(void);
     
     /* Adjust logging level (implementation may forward to your log system). */
     int leo_set_log_level(int lvl);

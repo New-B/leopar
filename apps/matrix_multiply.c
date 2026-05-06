@@ -255,6 +255,10 @@ static void launch_workers_and_wait(int world, int threads_per_node, const Regis
     const int total_workers = world * threads_per_node;
     leo_thread_t *ths = (leo_thread_t*)malloc(sizeof(leo_thread_t) * (size_t)total_workers);
 
+    if (leo_rank() == 0) {
+        (void)leo_stats_reset();
+    }
+
     /* Partition each owner's row range into threads_per_node chunks */
     int idx = 0;
     for (int r=0; r<world; ++r) {
@@ -308,6 +312,20 @@ static void launch_workers_and_wait(int world, int threads_per_node, const Regis
     /* Join all launched workers */
     for (int i=0; i<launched; ++i) {
         leo_thread_join(ths[i], NULL);
+    }
+
+    if (leo_rank() == 0) {
+        leo_stats_t s;
+        if (leo_stats_get(&s) == 0) {
+            printf("[scheduler] creates_sent=%" PRIu64 " creates_recv=%" PRIu64
+                   " joins_sent=%" PRIu64 " joins_recv=%" PRIu64 "\n",
+                   s.creates_sent, s.creates_recv, s.joins_sent, s.joins_recv);
+            printf("[scheduler] hint=%" PRIu64 " locality=%" PRIu64
+                   " hit=%" PRIu64 " miss=%" PRIu64 " load_escape=%" PRIu64 "\n",
+                   s.scheduler_hint, s.scheduler_locality,
+                   s.scheduler_locality_hit, s.scheduler_locality_miss,
+                   s.scheduler_load_escape);
+        }
     }
     free(ths);
 }

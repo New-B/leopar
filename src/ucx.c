@@ -17,6 +17,7 @@
 #include "log.h"
 #include "proto.h"
 #include "context.h"
+#include "query.h"
 
 #include <ucp/api/ucp.h>
 #include <ucs/type/status.h>
@@ -218,6 +219,7 @@ int ucx_send_bytes(int dest_rank, const void *buf, size_t len, int opcode)
             return -1;
         }
     }
+    leo_stats_note_ctrl_tx(len);
     return 0;
 }
 
@@ -269,6 +271,7 @@ void *ucx_recv_any_alloc(size_t *out_len, ucp_tag_t *out_tag, ucp_tag_recv_info_
     if (out_len) *out_len = len;
     if (out_tag) *out_tag = info.sender_tag;
     if (out_info) *out_info = info;
+    leo_stats_note_ctrl_rx(len);
     return buf;
 }
 

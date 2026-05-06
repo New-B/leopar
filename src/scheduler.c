@@ -6,8 +6,10 @@
  */
 
 #include "scheduler.h"
+#include "query.h"
 
 #include <stdatomic.h>
+#include <stdint.h>
 
 #ifndef SCHED_MAX_RANKS
 #define SCHED_MAX_RANKS 8192
@@ -51,6 +53,7 @@ static int pick_least_loaded(int world_size, int rr_seed)
 
 int scheduler_choose_rank(int world_size)
 {
+    leo_stats_note_scheduler_rr();
     return scheduler_choose_rank_hint(world_size, UINT64_MAX, 0);
 }
 
@@ -64,9 +67,11 @@ int scheduler_choose_rank_hint(int world_size, uint64_t locality_key, int priori
     const int preferred = scheduler_locality_home_rank(locality_key, world_size);
 
     if (preferred < 0) {
+        leo_stats_note_scheduler_hint();
         return least_loaded;
     }
 
+    leo_stats_note_scheduler_locality();
     const int pref_load = atomic_load(&g_est_load[preferred]);
     const int min_load = atomic_load(&g_est_load[least_loaded]);
 
@@ -78,8 +83,11 @@ int scheduler_choose_rank_hint(int world_size, uint64_t locality_key, int priori
     }
 
     if (pref_load <= min_load + escape_margin) {
+        leo_stats_note_scheduler_locality_hit();
         return preferred;
     }
+    leo_stats_note_scheduler_locality_miss();
+    leo_stats_note_scheduler_load_escape();
     return least_loaded;
 }
 

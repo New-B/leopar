@@ -45,7 +45,8 @@ LEOPAR_LIB := ../src/libleopar.a
 DEMOS := leoparDemo_create_join \
          leopar_api_multi_nodes_demo \
          leopar_byval_demo \
-         leopar_mb_create_join
+         leopar_mb_create_join \
+         leopar_mb_scheduler
 
 DEMO_SRCS := $(addsuffix .c,$(DEMOS))
 DEMO_OBJS := $(DEMO_SRCS:.c=.o)

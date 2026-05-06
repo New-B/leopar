@@ -17,6 +17,7 @@
 #include "proto.h"
 #include "tid.h"
 #include "ctrl.h"
+#include "query.h"
 
 #include <ucp/api/ucp.h>
 #include <stdlib.h>
@@ -116,6 +117,7 @@ static int leo_thread_create_impl(leo_thread_t *thread,
         free(msg_buf);
         return -1;
     }
+    leo_stats_note_create_sent();
     free(msg_buf);
 
     while (1) {
@@ -315,6 +317,7 @@ int leo_thread_join(leo_thread_t thread, void **retval)
         log_error("Failed to send JOIN_REQ for gtid=%" PRIu64, req.gtid);
         return -1;
     }
+    leo_stats_note_join_sent();
     log_debug("Sent JOIN_REQ for gtid=%" PRIu64 " to rank=%d", req.gtid, owner_rank);
 
     /* 3. Wait for JOIN_RESP */
@@ -397,4 +400,3 @@ int leo_thread_join(leo_thread_t thread, void **retval)
     }
 
 }
-
