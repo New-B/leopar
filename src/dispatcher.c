@@ -136,12 +136,17 @@ static void handle_create_req(const void *buf, size_t len, uint32_t src_rank)
         free(arg_copy);
         return;
     }
-    g_local_threads[tid].in_use = 1;
-    g_local_threads[tid].finished = 0;
 
-    pthread_create(&g_local_threads[tid].thread, NULL, fn, arg_copy);
+    ack.gtid = LEO_TID_MAKE(g_ctx.rank, tid);
+    if (threadtable_spawn(tid, fn, arg_copy, ack.gtid, (int)src_rank) != 0) {
+        log_error("Failed to spawn remote thread tid=%d func_id=%u", tid, req->func_id);
+        ack.status = -1;
+        (void)threadtable_reclaim(tid);
+        free(arg_copy);
+        ucx_send_bytes(src_rank, &ack, sizeof(ack), OP_CREATE_ACK);
+        return;
+    }
 
-    ack.gtid   = LEO_TID_MAKE(g_ctx.rank, tid);
     ack.status = 0;
     ucx_send_bytes(src_rank, &ack, sizeof(ack), OP_CREATE_ACK);
 
@@ -166,50 +171,47 @@ static void handle_join_req(const void *buf, size_t len, uint32_t src_rank)
     resp.gtid   = gtid;
     resp.done   = 0;
 
-    // if (owner_rank != g_ctx.rank || local_tid < 0 || local_tid >= MAX_LOCAL_THREADS) {
-    //     log_warn("JOIN_REQ invalid owner"); 
-    //     ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP); 
-    //     return;
-    // }
-
-    // local_thread_t* local_thread_entry = &g_local_threads[local_tid];
-    // if (!atomic_load(&local_thread_entry->in_use)) {
-    //     resp.done = atomic_load(&local_thread_entry->finished) ? 1 : 1; // 已经没人占用，视为done
-    //     ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP);
-    //     return;
-    // }
-
-    // if (atomic_load(&local_thread_entry->finished)) {
-    //     resp.done = 1;
-    //     ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP);
-    //     return;
-    // }
-
-    // // 还未完成：登记等待者，**不阻塞 dispatcher**
-    // join_waiter_t* w = malloc(sizeof(*w));
-    // if (!w) { ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP); return; }
-    // w->src_rank = src_rank; w->next = NULL;
-
-    // pthread_mutex_lock(&local_thread_entry->mu);
-    // w->next = local_thread_entry->waiters; local_thread_entry->waiters = w;
-    // pthread_mutex_unlock(&local_thread_entry->mu);
-
-    if (owner_rank == g_ctx.rank &&
-        local_tid >= 0 && local_tid < MAX_LOCAL_THREADS &&
-        g_local_threads[local_tid].in_use) {
-
-        /* 阻塞等待该本地线程结束（与 pthread_join 语义一致） */
-        pthread_join(g_local_threads[local_tid].thread, NULL);
-        g_local_threads[local_tid].in_use = 0;
-        g_local_threads[local_tid].finished = 1;
-        resp.done = 1;
-
-        log_info("JOIN_REQ handled: gtid=%" PRIu64 " joined", gtid);
-    } else {
+    if (owner_rank != g_ctx.rank ||
+        local_tid < 0 || local_tid >= MAX_LOCAL_THREADS) {
         log_warn("JOIN_REQ invalid or not owner: gtid=%" PRIu64, gtid);
+        ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP);
+        return;
     }
 
-    ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP);
+    local_thread_t *slot = &g_local_threads[local_tid];
+    pthread_mutex_lock(&slot->mu);
+    if (!slot->in_use) {
+        pthread_mutex_unlock(&slot->mu);
+        log_warn("JOIN_REQ for inactive slot: gtid=%" PRIu64, gtid);
+        ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP);
+        return;
+    }
+
+    if (slot->finished) {
+        resp.done = 1;
+        const int remote_owned = (slot->creator_rank >= 0 && slot->creator_rank != g_ctx.rank);
+        pthread_mutex_unlock(&slot->mu);
+        ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP);
+        if (remote_owned) {
+            (void)threadtable_reclaim(local_tid);
+        }
+        log_info("JOIN_REQ handled immediately: gtid=%" PRIu64 " already finished", gtid);
+        return;
+    }
+
+    join_waiter_t *w = (join_waiter_t*)malloc(sizeof(*w));
+    if (!w) {
+        pthread_mutex_unlock(&slot->mu);
+        log_error("JOIN_REQ waiter alloc failed for gtid=%" PRIu64, gtid);
+        ucx_send_bytes(src_rank, &resp, sizeof(resp), OP_JOIN_RESP);
+        return;
+    }
+    w->src_rank = src_rank;
+    w->next = slot->waiters;
+    slot->waiters = w;
+    pthread_mutex_unlock(&slot->mu);
+
+    log_info("JOIN_REQ queued: gtid=%" PRIu64 " waiter_rank=%u", gtid, src_rank);
 }
 
 /* ----------- 分发入口：根据 opcode 调用处理 ----------- */

@@ -14,21 +14,30 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <sys/types.h>
 
 /* Maximum number of local threads per rank */
 #define MAX_LOCAL_THREADS 128
 
-// typedef struct join_waiter {
-//     uint32_t src_rank;
-//     struct join_waiter* next;
-// } join_waiter_t;
+typedef enum {
+    LEO_THREAD_SLOT_FREE = 0,
+    LEO_THREAD_CREATED,
+    LEO_THREAD_RUNNING,
+    LEO_THREAD_FINISHED
+} leo_thread_state_t;
+
+typedef struct join_waiter {
+    uint32_t src_rank;
+    struct join_waiter* next;
+} join_waiter_t;
 
 /* Local thread table entry */
 typedef struct {
     pthread_t thread;           /* POSIX thread handle */
     int       in_use;        /* whether this slot is occupied */
     int       finished;      /* whether the thread finished */
-    // join_waiter_t *waiters; /* linked list of ranks waiting to join */
+    leo_thread_state_t state; /* lifecycle state managed by LeoPar */
+    join_waiter_t *waiters;   /* ranks waiting for remote completion */
     pthread_mutex_t mu;       /* mutex for finished state */
     pthread_cond_t  cv;      /* condvar for finished state */
     int       task_id;       /* registered function id */
@@ -37,6 +46,8 @@ typedef struct {
     int       local_tid;     /* index in local thread table */
     uint64_t  gtid;          /* global thread id (owner<<32 | local) */
     int       creator_rank;  /* creator rank (for exit notify) */
+    void *(*start_routine)(void*);
+    void     *retval;        /* cached thread result */
 } local_thread_t;
 
 
@@ -53,5 +64,12 @@ void threadtable_finalize(void);
 /* Internal API */
 local_thread_t* threadtable_get(int local_tid);
 int threadtable_alloc(void);
+int threadtable_spawn(int local_tid,
+                      void *(*start_routine)(void*),
+                      void *arg,
+                      uint64_t gtid,
+                      int creator_rank);
+int threadtable_wait_local(int local_tid, void **retval, int64_t timeout_ms);
+int threadtable_reclaim(int local_tid);
 
 #endif /* THREADTABLE_H */

@@ -85,6 +85,11 @@ int leopar_init(const char *config_path, int rank, const char *log_path)
         return -1;
     }
 
+    if (functable_init() != 0) {
+        log_error("Function table init failed");
+        return -1;
+    }
+
     /* 7. Initialize local thread table */
     if (threadtable_init() != 0) {
         log_error("Thread table init failed for rank=%d", g_ctx.rank);
@@ -124,6 +129,7 @@ void leopar_finalize(void)
 
     /* 1. Destroy thread table. Ensure local threads have exited */
     threadtable_finalize();
+    (void)functable_finalize();
 
     /* 2. stop dispatcher */
     dispatcher_stop();
@@ -179,12 +185,14 @@ int leo_thread_create_named(leo_thread_t *thread,
             return -1;
         }
 
-        g_local_threads[tid].in_use = 1;
-        g_local_threads[tid].finished = 0;
+        uint64_t gtid = LEO_TID_MAKE(g_ctx.rank, tid);
+        if (threadtable_spawn(tid, start_routine, arg, gtid, g_ctx.rank) != 0) {
+            log_error("Failed to spawn local LeoPar thread tid=%d", tid);
+            (void)threadtable_reclaim(tid);
+            return -1;
+        }
 
-        pthread_create(&g_local_threads[tid].thread, NULL, start_routine, arg);
-
-        if (thread) *thread = LEO_TID_MAKE(g_ctx.rank, tid); /*tid*/;
+        if (thread) *thread = gtid;
         log_debug("leo_thread_create_named: Created local thread tid=%d for func_id=%d", tid, func_id);
         return 0;
     } else {
@@ -254,19 +262,13 @@ int leo_thread_join(leo_thread_t thread, void **retval)
 
     /* 1. Local thread join */
     if (owner_rank == g_ctx.rank) {
-        if (local_tid < MAX_LOCAL_THREADS &&
-            g_local_threads[local_tid].in_use) {
-
-            pthread_join(g_local_threads[local_tid].thread, retval);
-            g_local_threads[local_tid].in_use = 0;
-            g_local_threads[local_tid].finished = 1;
-
+        int rc = threadtable_wait_local(local_tid, retval, -1);
+        if (rc == 0) {
             log_info("Joined local thread tid=%d", local_tid);
             return 0;
-        } else {
-            log_error("Invalid local tid=%d for join", local_tid);
-            return -1;
         }
+        log_error("Invalid local tid=%d for join", local_tid);
+        return -1;
     }
 
     /* 2. Remote thread join: send JOIN_REQ */
@@ -360,7 +362,6 @@ int leo_thread_join(leo_thread_t thread, void **retval)
     }
 
 }
-
 
 
 

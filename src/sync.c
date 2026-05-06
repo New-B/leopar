@@ -127,24 +127,7 @@ int leo_thread_join_timeout(leo_thread_t t, void **retval, int64_t timeout_ms)
     unsigned long long t0 = now_ms();
 
     if (owner == g_ctx.rank) {
-        /* local join with bounded wait */
-        while (1) {
-#ifdef __linux__
-            void *res = NULL;
-            int prc = pthread_tryjoin_np(g_local_threads[ltid].thread, &res);
-            if (prc == 0) {
-                g_local_threads[ltid].in_use = 0;
-                g_local_threads[ltid].finished = 1;
-                return 0;
-            }
-#endif
-            if (g_local_threads[ltid].finished) {
-                return 0; /* already reaped elsewhere */
-            }
-            if ((int64_t)(now_ms() - t0) > timeout_ms) return -ETIMEDOUT;
-            dispatcher_progress_once();
-            usleep(1000);
-        }
+        return threadtable_wait_local(ltid, retval, timeout_ms);
     } else {
         /* remote join protocol with timeout */
         msg_join_req_t req = { .opcode = OP_JOIN_REQ, .gtid = t };
